@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">KM ONE motor</string>
+    <string name="km_radar_accessibility_service_label">KM Radar Core V2</string>
+    <string name="km_radar_accessibility_service_description">Observa sinais de tela para o pipeline do KM Radar Core V2.</string>
+</resources>

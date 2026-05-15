@@ -1,0 +1,115 @@
+{
+  "observationId": "27a161d8-9de9-46f0-acd8-339252c88a21",
+  "captureRequestId": "6e331c45-5b50-4eaf-9a5d-31611ed3079e",
+  "triggerSource": "NINETY_NINE_TREE_STRUCTURE",
+  "dominantPackage": "com.app99.driver",
+  "floatingPackage": "com.android.systemui",
+  "floatingBounds": "0 2205 1080 2340",
+  "floatingKind": "SYSTEM_UI_FLOATING",
+  "screenshotWidth": 1080,
+  "screenshotHeight": 2340,
+  "cropCandidates": [
+    {
+      "id": "95ae1eaf-b76c-4410-b13d-ac5262aa4a77",
+      "kind": "FULL_DEBUG",
+      "rect": "0 0 1080 2340",
+      "reason": "full_reference_debug"
+    },
+    {
+      "id": "e00f672d-c429-4563-a7db-bedd721529b4",
+      "kind": "LOWER_HALF",
+      "rect": "0 1053 1080 2340",
+      "reason": "lower_half_default"
+    },
+    {
+      "id": "66bd60a6-00c4-4f87-9196-c09ba4cadc7a",
+      "kind": "LOWER_THIRD",
+      "rect": "0 1404 1080 2340",
+      "reason": "lower_third_default"
+    },
+    {
+      "id": "bd6910e3-ced6-4638-9fd4-d538934b2575",
+      "kind": "CENTER_CARD_AREA",
+      "rect": "54 585 1026 1989",
+      "reason": "center_card_area_default"
+    },
+    {
+      "id": "ef84453d-2cca-4f7f-8c12-9829d7186fd4",
+      "kind": "FLOATING_BOUNDS_EXPANDED",
+      "rect": "0 1854 1080 2340",
+      "reason": "expanded_from_floating_bounds"
+    },
+    {
+      "id": "9bd3e35c-3411-459f-8f4c-f5b0880e8b0d",
+      "kind": "PLATFORM_SPECIFIC_CANDIDATE",
+      "rect": "0 936 1080 2340",
+      "reason": "platform_specific_trigger_candidate"
+    }
+  ],
+  "probeResults": [
+    {
+      "cropId": "95ae1eaf-b76c-4410-b13d-ac5262aa4a77",
+      "cropKind": "FULL_DEBUG",
+      "darkPixelRatio": 0.38081632653061226,
+      "lightPixelRatio": 0.06571428571428571,
+      "contrastScore": 0.31510204081632653,
+      "edgeDensityHint": 0.12183673469387755,
+      "dominantVisualHint": "UBER_LIGHT_OR_DARK_CARD",
+      "offerLikeScore": 6
+    },
+    {
+      "cropId": "e00f672d-c429-4563-a7db-bedd721529b4",
+      "cropKind": "LOWER_HALF",
+      "darkPixelRatio": 0.454,
+      "lightPixelRatio": 0.1024,
+      "contrastScore": 0.3516,
+      "edgeDensityHint": 0.0982,
+      "dominantVisualHint": "NINETY_NINE_DARK_CARD",
+      "offerLikeScore": 8
+    },
+    {
+      "cropId": "66bd60a6-00c4-4f87-9196-c09ba4cadc7a",
+      "cropKind": "LOWER_THIRD",
+      "darkPixelRatio": 0.5076,
+      "lightPixelRatio": 0.1424,
+      "contrastScore": 0.3652000000000001,
+      "edgeDensityHint": 0.0942,
+      "dominantVisualHint": "NINETY_NINE_DARK_CARD",
+      "offerLikeScore": 6
+    },
+    {
+      "cropId": "bd6910e3-ced6-4638-9fd4-d538934b2575",
+      "cropKind": "CENTER_CARD_AREA",
+      "darkPixelRatio": 0.32653061224489793,
+      "lightPixelRatio": 0.0029154518950437317,
+      "contrastScore": 0.3236151603498542,
+      "edgeDensityHint": 0.10474802165764265,
+      "dominantVisualHint": "UNKNOWN",
+      "offerLikeScore": 4
+    },
+    {
+      "cropId": "ef84453d-2cca-4f7f-8c12-9829d7186fd4",
+      "cropKind": "FLOATING_BOUNDS_EXPANDED",
+      "darkPixelRatio": 0.6012244897959184,
+      "lightPixelRatio": 0.2693877551020408,
+      "contrastScore": 0.33183673469387753,
+      "edgeDensityHint": 0.06693877551020408,
+      "dominantVisualHint": "UNKNOWN",
+      "offerLikeScore": 6
+    },
+    {
+      "cropId": "9bd3e35c-3411-459f-8f4c-f5b0880e8b0d",
+      "cropKind": "PLATFORM_SPECIFIC_CANDIDATE",
+      "darkPixelRatio": 0.4310204081632653,
+      "lightPixelRatio": 0.10775510204081633,
+      "contrastScore": 0.32326530612244897,
+      "edgeDensityHint": 0.11408163265306122,
+      "dominantVisualHint": "UNKNOWN",
+      "offerLikeScore": 6
+    }
+  ],
+  "bestCandidate": "LOWER_HALF",
+  "durationMs": 42,
+  "acceptedForOcrFuture": true,
+  "reason": "best_candidate_score"
+}

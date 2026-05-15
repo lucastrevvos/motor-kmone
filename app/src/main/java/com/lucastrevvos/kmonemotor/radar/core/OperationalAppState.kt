@@ -1,0 +1,12 @@
+package com.lucastrevvos.kmonemotor.radar.core
+
+enum class OperationalAppState {
+    UBER_UNKNOWN,
+    UBER_OFFLINE,
+    UBER_ONLINE_IDLE,
+    UBER_SEARCHING,
+    UBER_BACKGROUND_ONLINE_HINT,
+    NINETY_NINE_UNKNOWN,
+    NINETY_NINE_FLOATING_OFFLINE_HINT,
+    NINETY_NINE_FOREGROUND_ACTIVE_HINT
+}
