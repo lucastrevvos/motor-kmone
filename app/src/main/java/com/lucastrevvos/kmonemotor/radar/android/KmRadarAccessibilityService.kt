@@ -51,6 +51,9 @@ import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstInput
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstPolicy
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstScheduler
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPersistenceProcessor
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPersistenceResult
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferRuntime
 import com.lucastrevvos.kmonemotor.radar.signals.NodeTreeSignature
 import com.lucastrevvos.kmonemotor.radar.signals.FloatingWindowClassifier
 import com.lucastrevvos.kmonemotor.radar.signals.OperationalStateTracker
@@ -114,6 +117,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
             clock = clock,
             debugWriter = DecisionPresentationDebugWriter(this)
         )
+    }
+    private val seenOfferPersistenceProcessor: SeenOfferPersistenceProcessor by lazy {
+        SeenOfferRuntime.get(this).persistenceProcessor
     }
     private val manualAnalysisPlanner = ManualAnalysisPlanner()
     private val manualBitmapPreparer = ManualSecondaryOcrBitmapPreparer(AndroidManualCropFactory)
@@ -1168,13 +1174,18 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 reason = fingerprint.reason
             )
             fingerprintDebugWriter.write(fingerprint, observation)
-            val burstOutcome = if (!observation.isManual) {
-                maybeScheduleAutomaticBurst(observation, fingerprint)
-            } else {
-                AutoBurstOutcome()
-            }
-            try {
-                val dedupeResult = dedupeProcessor.process(fingerprint, observation)
+              val burstOutcome = if (!observation.isManual) {
+                  maybeScheduleAutomaticBurst(observation, fingerprint)
+              } else {
+                  AutoBurstOutcome()
+              }
+              var persistenceResult = SeenOfferPersistenceResult(
+                  attempted = false,
+                  persisted = false,
+                  reason = "not_attempted"
+              )
+              try {
+                  val dedupeResult = dedupeProcessor.process(fingerprint, observation)
                 RadarDebugStore.updateDedupeSummary(
                     result = dedupeResult.decision.name,
                     clusterId = dedupeResult.clusterId,
@@ -1187,8 +1198,8 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     bestOfferPlatform = dedupeResult.bestOfferPlatform?.name
                 )
                 val parserResult = offerParser.process(fingerprint, observation, dedupeResult)
-                RadarDebugStore.updateParserSummary(
-                    status = parserResult.status,
+                  RadarDebugStore.updateParserSummary(
+                      status = parserResult.status,
                     clusterId = parserResult.draft?.clusterId,
                     platform = parserResult.draft?.platform?.name,
                     product = parserResult.draft?.product,
@@ -1201,12 +1212,17 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     confidence = parserResult.draft?.confidence?.overall?.toString(),
                     warnings = parserResult.draft?.warnings?.joinToString(", ") ?: parserResult.reason,
                     sanityStatus = parserResult.draft?.sanityStatus?.name,
-                    sanityIssues = parserResult.draft?.sanityIssues?.joinToString(", ") { it.name },
-                    shouldBlockEconomicDecision = parserResult.draft?.shouldBlockEconomicDecisionFuture
-                )
-                val decisionResult = economicDecisionProcessor.process(
-                    parserResult = parserResult,
-                    source = if (observation.isManual) DecisionSource.MANUAL else DecisionSource.AUTOMATIC
+                      sanityIssues = parserResult.draft?.sanityIssues?.joinToString(", ") { it.name },
+                      shouldBlockEconomicDecision = parserResult.draft?.shouldBlockEconomicDecisionFuture
+                  )
+                  persistenceResult = seenOfferPersistenceProcessor.process(
+                      fingerprint = fingerprint,
+                      observation = observation,
+                      parserResult = parserResult
+                  )
+                  val decisionResult = economicDecisionProcessor.process(
+                      parserResult = parserResult,
+                      source = if (observation.isManual) DecisionSource.MANUAL else DecisionSource.AUTOMATIC
                 )
                 RadarDebugStore.updateEconomicDecisionSummary(
                     decision = decisionResult.result?.decision?.name ?: decisionResult.reason.uppercase(),
@@ -1241,25 +1257,34 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     decisionReason = decisionResult.result?.decision?.name ?: decisionResult.reason,
                     presentationStatus = presentationResult.status,
                     presentationReason = presentationResult.presentation?.kind?.name ?: presentationResult.reason,
-                    wasOverlayShown = presentationResult.presentation != null,
-                    overlayKind = presentationResult.presentation?.kind?.name,
-                    burstOutcome = burstOutcome
-                )
-            } catch (throwable: Throwable) {
-                RadarLogger.w(
-                    "KM_V2_DEDUPE",
-                    "KM_V2_DEDUPE_FAILED",
+                      wasOverlayShown = presentationResult.presentation != null,
+                      overlayKind = presentationResult.presentation?.kind?.name,
+                      burstOutcome = burstOutcome,
+                      persistenceResult = persistenceResult
+                  )
+              } catch (throwable: Throwable) {
+                  if (!persistenceResult.attempted) {
+                      persistenceResult = seenOfferPersistenceProcessor.process(
+                          fingerprint = fingerprint,
+                          observation = observation,
+                          parserResult = null
+                      )
+                  }
+                  RadarLogger.w(
+                      "KM_V2_DEDUPE",
+                      "KM_V2_DEDUPE_FAILED",
                     "observationId" to observation.observationId,
                     "error" to throwable.message,
                     "stacktrace" to throwable.stackTraceToString()
                 )
                 logOfferPipelineFinalResult(
-                    observation = observation,
-                    fingerprint = fingerprint,
-                    finalReason = "dedupe_or_downstream_failed",
-                    burstOutcome = burstOutcome
-                )
-            }
+                      observation = observation,
+                      fingerprint = fingerprint,
+                      finalReason = "dedupe_or_downstream_failed",
+                      burstOutcome = burstOutcome,
+                      persistenceResult = persistenceResult
+                  )
+              }
             if (observation.isManual) {
                 updateManualTiming(observation.analysisEpoch) {
                     copy(fingerprintFinishedAtMs = finishedAtMs)
@@ -1447,6 +1472,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
         wasOverlayShown: Boolean = false,
         overlayKind: String? = null,
         burstOutcome: AutoBurstOutcome = AutoBurstOutcome(),
+        persistenceResult: SeenOfferPersistenceResult = SeenOfferPersistenceResult(
+            attempted = false,
+            persisted = false,
+            reason = "not_attempted"
+        ),
         finalReason: String? = null
     ) {
         val sourceSnapshot = consumeAutomaticCaptureSource(observation.observationId)
@@ -1473,7 +1503,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
             "wasRetryScheduled" to burstOutcome.scheduled,
             "wasOverlayShown" to wasOverlayShown,
             "overlayKind" to overlayKind,
-            "wasPersisted" to "unknown",
+            "wasPersisted" to persistenceResult.persisted,
+            "persistedSeenOfferId" to persistenceResult.seenOffer?.id,
+            "persistReason" to persistenceResult.reason,
             "parserStatus" to parserStatus,
             "decisionStatus" to decisionStatus,
             "presentationStatus" to presentationStatus,
