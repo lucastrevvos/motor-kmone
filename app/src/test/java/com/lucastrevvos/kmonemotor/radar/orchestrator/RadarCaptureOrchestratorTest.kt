@@ -3,7 +3,9 @@ package com.lucastrevvos.kmonemotor.radar.orchestrator
 import com.lucastrevvos.kmonemotor.radar.android.ScreenshotCaptureResult
 import com.lucastrevvos.kmonemotor.radar.android.ScreenshotCapturer
 import com.lucastrevvos.kmonemotor.radar.android.ScreenshotFinishStatus
+import com.lucastrevvos.kmonemotor.radar.core.AnalysisEpochController
 import com.lucastrevvos.kmonemotor.radar.core.FloatingWindowKind
+import com.lucastrevvos.kmonemotor.radar.core.PlatformHint
 import com.lucastrevvos.kmonemotor.radar.core.RadarClock
 import com.lucastrevvos.kmonemotor.radar.core.RadarSignal
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
@@ -235,7 +237,7 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
-    fun uberDominantWithSystemUiFloating_staysIgnored() {
+    fun uberDominantStrongWithSystemUiFloating_createsDiagnosticCaptureRequest() {
         val capturer = RecordingScreenshotCapturer()
         val orchestrator = RadarCaptureOrchestrator(
             screenshotCapturer = capturer,
@@ -246,6 +248,82 @@ class RadarCaptureOrchestratorTest {
             uberStateSignal(
                 previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
                 currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                nodeCount = 125,
+                visibleTextNodeCount = 11,
+                numericTextNodeCount = 2,
+                buttonLikeNodeCount = 4,
+                floatingPackage = "com.android.systemui",
+                floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING
+            )
+        )
+
+        assertEquals(1, capturer.requests.size)
+        assertEquals(
+            TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            capturer.requests.single().triggerSource
+        )
+    }
+
+    @Test
+    fun uberDominantWeakWithSystemUiFloating_staysIgnored() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 12,
+                visibleTextNodeCount = 1,
+                numericTextNodeCount = 0,
+                buttonLikeNodeCount = 0,
+                previousNodeCount = 12,
+                previousVisibleTextNodeCount = 1,
+                floatingPackage = "com.android.systemui",
+                floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantWithDifferentNodeTreePackage_staysIgnored() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                nodeTreePackage = "com.app99.driver",
+                floatingPackage = "com.android.systemui",
+                floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantWithDifferentDominantPackage_staysIgnored() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                dominantPackage = "com.app99.driver",
                 floatingPackage = "com.android.systemui",
                 floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING
             )
@@ -280,6 +358,123 @@ class RadarCaptureOrchestratorTest {
         assertEquals(1, capturer.requests.size)
     }
 
+    @Test
+    fun manualRequest_hasCriticalPriority() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 4_000L }
+        )
+        val epoch = AnalysisEpochController.bumpManualEpoch()
+
+        val request = orchestrator.requestManualAnalysis(
+            ManualAnalysisContext(
+                requestedAtMs = 4_000L,
+                analysisEpoch = epoch,
+                source = "test",
+                dominantPackage = "com.ubercab.driver",
+                floatingPackage = "com.app99.driver",
+                floatingBounds = "0 0 100 100",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                platformHint = PlatformHint.UBER
+            )
+        )
+
+        assertEquals(CapturePriority.CRITICAL, request.priority)
+        assertEquals(TriggerSource.MANUAL_SCREEN_ANALYSIS, request.triggerSource)
+        assertTrue(request.isManual)
+    }
+
+    @Test
+    fun manualRequest_waitsForActiveCaptureAndRunsAfterRelease() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 5_000L }
+        )
+        orchestrator.onSignal(
+            RadarSignal.UberFloatingOverOtherApp(
+                dominantPackage = "com.app99.driver",
+                floatingPackage = "com.ubercab.driver",
+                floatingBounds = "901 392 1080 571",
+                floatingCoverage = 0.013,
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                eventReceivedAtMs = 5_000L,
+                signalEmittedAtMs = 5_010L
+            )
+        )
+        val epoch = AnalysisEpochController.bumpManualEpoch()
+        orchestrator.requestManualAnalysis(
+            ManualAnalysisContext(
+                requestedAtMs = 5_100L,
+                analysisEpoch = epoch,
+                source = "test",
+                dominantPackage = "com.ubercab.driver",
+                floatingPackage = "com.app99.driver",
+                floatingBounds = "0 0 100 100",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                platformHint = PlatformHint.UBER
+            )
+        )
+
+        assertEquals(1, capturer.requests.size)
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+
+        assertEquals(2, capturer.requests.size)
+        assertEquals(TriggerSource.MANUAL_SCREEN_ANALYSIS, capturer.requests[1].triggerSource)
+    }
+
+    @Test
+    fun manualRequest_replacesPendingAutomaticCapture() {
+        var nowMs = 6_000L
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { nowMs }
+        )
+        orchestrator.onSignal(
+            RadarSignal.UberFloatingOverOtherApp(
+                dominantPackage = "com.app99.driver",
+                floatingPackage = "com.ubercab.driver",
+                floatingBounds = "901 392 1080 571",
+                floatingCoverage = 0.013,
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                eventReceivedAtMs = 6_000L,
+                signalEmittedAtMs = 6_010L
+            )
+        )
+        nowMs = 6_500L
+        orchestrator.onSignal(
+            RadarSignal.UberFloatingOverOtherApp(
+                dominantPackage = "com.app99.driver",
+                floatingPackage = "com.ubercab.driver",
+                floatingBounds = "800 300 1080 650",
+                floatingCoverage = 0.021,
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                eventReceivedAtMs = 6_500L,
+                signalEmittedAtMs = 6_510L
+            )
+        )
+        val epoch = AnalysisEpochController.bumpManualEpoch()
+        orchestrator.requestManualAnalysis(
+            ManualAnalysisContext(
+                requestedAtMs = 6_600L,
+                analysisEpoch = epoch,
+                source = "test",
+                dominantPackage = "com.ubercab.driver",
+                floatingPackage = "com.app99.driver",
+                floatingBounds = "0 0 100 100",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                platformHint = PlatformHint.UBER
+            )
+        )
+
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+
+        assertEquals(2, capturer.requests.size)
+        assertEquals(TriggerSource.MANUAL_SCREEN_ANALYSIS, capturer.requests[1].triggerSource)
+    }
+
     private fun ninetyNineSignal(
         nodeCount: Int,
         visibleTextNodeCount: Int,
@@ -310,6 +505,8 @@ class RadarCaptureOrchestratorTest {
     private fun uberStateSignal(
         previousState: com.lucastrevvos.kmonemotor.radar.core.UberReadableState,
         currentState: com.lucastrevvos.kmonemotor.radar.core.UberReadableState,
+        dominantPackage: String = "com.ubercab.driver",
+        nodeTreePackage: String = "com.ubercab.driver",
         nodeCount: Int = 18,
         visibleTextNodeCount: Int = 3,
         previousNodeCount: Int = 9,
@@ -323,9 +520,9 @@ class RadarCaptureOrchestratorTest {
     ) = RadarSignal.UberStateChanged(
         previousState = previousState,
         currentState = currentState,
-        dominantPackage = "com.ubercab.driver",
+        dominantPackage = dominantPackage,
         floatingPackage = floatingPackage,
-        nodeTreePackage = "com.ubercab.driver",
+        nodeTreePackage = nodeTreePackage,
         nodeCount = nodeCount,
         visibleTextNodeCount = visibleTextNodeCount,
         bottomHalfTextNodeCount = visibleTextNodeCount,
@@ -345,6 +542,7 @@ class RadarCaptureOrchestratorTest {
         private val autoFinish: Boolean = false
     ) : ScreenshotCapturer {
         val requests = mutableListOf<CaptureRequest>()
+        private val finishedCallbacks = mutableListOf<(CaptureRequest, ScreenshotFinishStatus) -> Unit>()
 
         override fun capture(
             request: CaptureRequest,
@@ -353,9 +551,14 @@ class RadarCaptureOrchestratorTest {
             onFinished: (CaptureRequest, ScreenshotFinishStatus) -> Unit
         ) {
             requests += request
+            finishedCallbacks += onFinished
             if (autoFinish) {
                 onFinished(request, ScreenshotFinishStatus.SUCCESS)
             }
+        }
+
+        fun finish(index: Int, status: ScreenshotFinishStatus) {
+            finishedCallbacks[index](requests[index], status)
         }
     }
 }

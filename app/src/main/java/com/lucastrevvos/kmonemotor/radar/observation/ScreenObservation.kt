@@ -26,5 +26,8 @@ data class ScreenObservation(
     val eventToObservationMs: Long,
     val visualPlatformHint: PlatformHint?,
     val offerCycleClassification: OfferCycleClassification?,
-    val metadata: ObservationMetadata
+    val analysisEpoch: Long = 0L,
+    val isManual: Boolean = false,
+    val manualReason: String? = null,
+    val metadata: ObservationMetadata = ObservationMetadata()
 )

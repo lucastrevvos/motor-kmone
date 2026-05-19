@@ -28,11 +28,17 @@ class ScreenObservationFactory {
             eventToObservationMs = observationCreatedAtMs - request.sourceEventAtMs,
             visualPlatformHint = request.platformHint,
             offerCycleClassification = request.offerCycleClassification,
+            analysisEpoch = request.analysisEpoch,
+            isManual = request.isManual,
+            manualReason = request.manualReason,
             metadata = ObservationMetadata(
                 notes = buildMap {
                     result.savedDebugPath?.let { put("savedDebugPath", it) }
                 },
-                offerCycleClassification = request.offerCycleClassification
+                offerCycleClassification = request.offerCycleClassification,
+                analysisEpoch = request.analysisEpoch,
+                isManual = request.isManual,
+                manualReason = request.manualReason
             )
         )
     }

@@ -8,6 +8,7 @@ import com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleClassification
 import com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleClassifier
 import com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleKind
 import com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleSnapshot
+import com.lucastrevvos.kmonemotor.radar.core.AnalysisEpochController
 import com.lucastrevvos.kmonemotor.radar.core.FloatingWindowKind
 import com.lucastrevvos.kmonemotor.radar.core.PlatformHint
 import com.lucastrevvos.kmonemotor.radar.core.RadarClock
@@ -35,6 +36,47 @@ class RadarCaptureOrchestrator(
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
     private val uberDominantDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
     private val ninetyNineCompactDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
+
+    fun requestManualAnalysis(context: ManualAnalysisContext): CaptureRequest {
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_MANUAL_ANALYSIS_REQUESTED",
+            "epoch" to context.analysisEpoch,
+            "source" to context.source,
+            "manualClickedAtMs" to context.requestedAtMs,
+            "dominantPackage" to context.dominantPackage,
+            "floatingPackage" to context.floatingPackage
+        )
+        clearPendingAutomaticWork()
+        val request = CaptureRequest(
+            id = UUID.randomUUID().toString(),
+            sourceEventAtMs = context.requestedAtMs,
+            signalEmittedAtMs = context.requestedAtMs,
+            createdAtMs = context.requestedAtMs,
+            approvedAtMs = null,
+            triggerSource = TriggerSource.MANUAL_SCREEN_ANALYSIS,
+            platformHint = context.platformHint,
+            priority = CapturePriority.CRITICAL,
+            dominantPackage = context.dominantPackage,
+            floatingPackage = context.floatingPackage,
+            floatingBounds = context.floatingBounds,
+            floatingKind = context.floatingKind,
+            reason = "driver_requested_current_screen_analysis",
+            analysisEpoch = context.analysisEpoch,
+            isManual = true,
+            manualReason = "driver_requested_current_screen_analysis"
+        )
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_MANUAL_CAPTURE_QUEUED",
+            "requestId" to request.id,
+            "epoch" to request.analysisEpoch,
+            "activeCaptureExists" to (activeCapture != null)
+        )
+        RadarDebugStore.updateLastCaptureRequest(request)
+        scheduleCapture(request)
+        return request
+    }
 
     fun onSignal(signal: RadarSignal) {
         val requestCandidate = toCaptureRequest(signal)
@@ -75,7 +117,9 @@ class RadarCaptureOrchestrator(
             "floatingKind" to request.floatingKind,
             "reason" to request.reason,
             "offerCycleKind" to request.offerCycleClassification?.kind,
-            "offerCycleId" to request.offerCycleClassification?.cycleId
+            "offerCycleId" to request.offerCycleClassification?.cycleId,
+            "analysisEpoch" to request.analysisEpoch,
+            "isManual" to request.isManual
         )
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
@@ -131,6 +175,14 @@ class RadarCaptureOrchestrator(
     private fun approveCapture(request: CaptureRequest) {
         val approvedRequest = request.copy(approvedAtMs = clock.nowMs())
         activeCapture = approvedRequest
+        if (approvedRequest.isManual) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_MANUAL_CAPTURE_STARTED",
+                "requestId" to approvedRequest.id,
+                "epoch" to approvedRequest.analysisEpoch
+            )
+        }
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
             "KM_V2_CAPTURE_APPROVED",
@@ -247,19 +299,21 @@ class RadarCaptureOrchestrator(
 
     private fun toCaptureRequest(signal: RadarSignal): CaptureRequest? {
         val nowMs = clock.nowMs()
+        val epoch = AnalysisEpochController.current()
         return when (signal) {
-            is RadarSignal.UberFloatingOverOtherApp -> buildUberFloatingCaptureRequest(signal, nowMs)
-            is RadarSignal.UberStateChanged -> buildUberStateCaptureRequest(signal, nowMs)
-            is RadarSignal.NinetyNineTreeStructureChanged -> buildNinetyNineCaptureRequest(signal, nowMs)
+            is RadarSignal.UberFloatingOverOtherApp -> buildUberFloatingCaptureRequest(signal, nowMs, epoch)
+            is RadarSignal.UberStateChanged -> buildUberStateCaptureRequest(signal, nowMs, epoch)
+            is RadarSignal.NinetyNineTreeStructureChanged -> buildNinetyNineCaptureRequest(signal, nowMs, epoch)
             is RadarSignal.DominantWindowChanged -> null
         }
     }
 
     private fun buildUberStateCaptureRequest(
         signal: RadarSignal.UberStateChanged,
-        nowMs: Long
+        nowMs: Long,
+        epoch: Long
     ): CaptureRequest {
-        val dominantDiagnosticRequest = buildUberDominantDiagnosticRequest(signal, nowMs)
+        val dominantDiagnosticRequest = buildUberDominantDiagnosticRequest(signal, nowMs, epoch)
         if (dominantDiagnosticRequest != null) {
             return dominantDiagnosticRequest
         }
@@ -282,13 +336,15 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "uber_state_${signal.previousState}_to_${signal.currentState}"
+            reason = "uber_state_${signal.previousState}_to_${signal.currentState}",
+            analysisEpoch = epoch
         )
     }
 
     private fun buildNinetyNineCaptureRequest(
         signal: RadarSignal.NinetyNineTreeStructureChanged,
-        nowMs: Long
+        nowMs: Long,
+        epoch: Long
     ): CaptureRequest {
         return CaptureRequest(
             id = UUID.randomUUID().toString(),
@@ -303,13 +359,15 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "ninety_nine_tree_structure_changed"
+            reason = "ninety_nine_tree_structure_changed",
+            analysisEpoch = epoch
         )
     }
 
     private fun buildUberFloatingCaptureRequest(
         signal: RadarSignal.UberFloatingOverOtherApp,
-        nowMs: Long
+        nowMs: Long,
+        epoch: Long
     ): CaptureRequest? {
         val isDiagnosticScenario = signal.dominantPackage == RadarConfig.NINETY_NINE_DRIVER_PACKAGE &&
             signal.floatingPackage == RadarConfig.UBER_DRIVER_PACKAGE &&
@@ -379,7 +437,8 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "uber_floating_over_99_diagnostic_capture"
+            reason = "uber_floating_over_99_diagnostic_capture",
+            analysisEpoch = epoch
         )
         uberFloatingDiagnosticCooldownBySignature[signature] = nowMs
         RadarLogger.i(
@@ -396,7 +455,8 @@ class RadarCaptureOrchestrator(
 
     private fun buildUberDominantDiagnosticRequest(
         signal: RadarSignal.UberStateChanged,
-        nowMs: Long
+        nowMs: Long,
+        epoch: Long
     ): CaptureRequest? {
         val nodeCountDelta = kotlin.math.abs(signal.nodeCount - (signal.previousNodeCount ?: 0))
         val visibleTextDelta = kotlin.math.abs(
@@ -427,6 +487,12 @@ class RadarCaptureOrchestrator(
                 add("tree_delta_threshold")
             }
         }
+        val hasStrongUberDominantSignal = isStrongUberDominantSignal(signal, matchedConditions)
+        val systemUiIgnored = hasStrongUberDominantSignal &&
+            signal.dominantPackage == RadarConfig.UBER_DRIVER_PACKAGE &&
+            signal.nodeTreePackage == RadarConfig.UBER_DRIVER_PACKAGE &&
+            (signal.floatingPackage == SYSTEM_UI_PACKAGE ||
+                signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING)
 
         RadarLogger.d(
             "KM_V2_ORCHESTRATOR",
@@ -440,16 +506,29 @@ class RadarCaptureOrchestrator(
             "buttonLikeNodeCount" to signal.buttonLikeNodeCount,
             "matchedConditions" to matchedConditions.joinToString(",")
         )
+        if (systemUiIgnored) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_UBER_DOMINANT_SYSTEM_UI_IGNORED",
+                "reason" to "strong_uber_dominant_signal",
+                "dominantPackage" to signal.dominantPackage,
+                "floatingPackage" to signal.floatingPackage,
+                "nodeTreePackage" to signal.nodeTreePackage,
+                "matchedConditions" to matchedConditions.joinToString(",")
+            )
+        }
 
         val rejectionReason = when {
             signal.dominantPackage != RadarConfig.UBER_DRIVER_PACKAGE -> "dominant_package_not_uber"
             signal.nodeTreePackage != null && signal.nodeTreePackage != RadarConfig.UBER_DRIVER_PACKAGE -> "node_tree_package_not_uber"
-            signal.floatingPackage == SYSTEM_UI_PACKAGE -> "floating_package_system_ui"
-            signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING -> "floating_kind_system_ui"
+            signal.floatingPackage == SYSTEM_UI_PACKAGE && !systemUiIgnored -> "uber_dominant_weak_signal"
+            signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING && !systemUiIgnored -> "uber_dominant_weak_signal"
             activeCapture != null -> "active_capture_exists"
             pendingCaptureRequest?.priority == CapturePriority.HIGH ||
                 pendingCaptureRequest?.priority == CapturePriority.CRITICAL -> "high_priority_pending_exists"
-            matchedConditions.isEmpty() -> "no_offer_like_heuristic_matched"
+            matchedConditions.isEmpty() -> "weak_signal"
+            signal.visibleTextNodeCount < 2 -> "insufficient_visible_text"
+            !hasStrongUberDominantSignal -> "insufficient_numeric_or_button_signal"
             else -> null
         }
         if (rejectionReason != null) {
@@ -500,7 +579,8 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "uber_dominant_possible_offer_diagnostic_capture"
+            reason = "uber_dominant_possible_offer_diagnostic_capture",
+            analysisEpoch = epoch
         )
         val offerCycleSnapshot = OfferCycleSnapshot(
             triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
@@ -565,6 +645,9 @@ class RadarCaptureOrchestrator(
             is RadarSignal.UberStateChanged -> {
                 if (request.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC) {
                     return SignalEvaluation(request = request, ignoredReason = null)
+                }
+                if (signal.dominantPackage != RadarConfig.UBER_DRIVER_PACKAGE) {
+                    return SignalEvaluation(request = request, ignoredReason = "dominant_package_not_uber")
                 }
                 if (signal.dominantPackage == RadarConfig.UBER_DRIVER_PACKAGE) {
                     return SignalEvaluation(request = request, ignoredReason = "uber_state_not_relevant")
@@ -666,6 +749,7 @@ class RadarCaptureOrchestrator(
         signal: RadarSignal.NinetyNineTreeStructureChanged,
         nowMs: Long
     ): CaptureRequest? {
+        val epoch = AnalysisEpochController.current()
         val signature = signal.signature
         val nodeCountBucket = when {
             signature.nodeCount in 10..14 -> "10_14"
@@ -734,7 +818,8 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "ninety_nine_compact_tree_diagnostic_capture"
+            reason = "ninety_nine_compact_tree_diagnostic_capture",
+            analysisEpoch = epoch
         )
         ninetyNineCompactDiagnosticCooldownBySignature[compactSignature] = nowMs
         RadarLogger.i(
@@ -818,6 +903,19 @@ class RadarCaptureOrchestrator(
         return String.format(java.util.Locale.US, "%.3f", coverage)
     }
 
+    private fun clearPendingAutomaticWork() {
+        val previousPending = pendingCaptureRequest
+        pendingCaptureRequest = null
+        if (previousPending != null && !previousPending.isManual) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_ANALYSIS_PENDING_CLEARED",
+                "requestId" to previousPending.id,
+                "triggerSource" to previousPending.triggerSource
+            )
+        }
+    }
+
     private fun logOfferCycleClassification(classification: OfferCycleClassification) {
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
@@ -855,6 +953,29 @@ class RadarCaptureOrchestrator(
             signal.visibleTextNodeCount,
             signal.numericTextNodeCount
         ).joinToString("|")
+    }
+
+    private fun isStrongUberDominantSignal(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>
+    ): Boolean {
+        val strongMatchedConditions = matchedConditions.count {
+            it == "numeric_text_with_visible_text" ||
+                it == "button_like_with_visible_text" ||
+                it == "tree_delta_threshold" ||
+                it == "searching_state_exit" ||
+                it == "searching_text_disappeared"
+        }
+        return signal.nodeTreePackage == RadarConfig.UBER_DRIVER_PACKAGE &&
+            signal.nodeCount >= 16 &&
+            signal.visibleTextNodeCount >= 2 &&
+            (
+                strongMatchedConditions >= 2 ||
+                    (strongMatchedConditions >= 1 && signal.numericTextNodeCount >= 1) ||
+                    (signal.numericTextNodeCount >= 1 && signal.buttonLikeNodeCount >= 1) ||
+                    (signal.numericTextNodeCount >= 2) ||
+                    (signal.buttonLikeNodeCount >= 2)
+                )
     }
 
     private fun uberNodeCountBucket(nodeCount: Int): String {

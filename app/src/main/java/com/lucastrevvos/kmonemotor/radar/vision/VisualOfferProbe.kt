@@ -421,6 +421,9 @@ class VisualOfferProbe(
                     put("durationMs", result.durationMs)
                     put("acceptedForOcrFuture", result.acceptedForOcrFuture)
                     put("reason", result.reason)
+                    put("analysisEpoch", observation.analysisEpoch)
+                    put("manual", observation.isManual)
+                    put("manualReason", observation.manualReason)
                     observation.offerCycleClassification?.let { classification ->
                         put("offerCycle", JSONObject().apply {
                             put("kind", classification.kind.name)

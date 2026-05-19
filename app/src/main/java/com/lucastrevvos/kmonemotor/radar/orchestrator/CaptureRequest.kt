@@ -19,5 +19,8 @@ data class CaptureRequest(
     val floatingBounds: String?,
     val floatingKind: FloatingWindowKind,
     val reason: String,
-    val offerCycleClassification: OfferCycleClassification? = null
+    val offerCycleClassification: OfferCycleClassification? = null,
+    val analysisEpoch: Long = 0L,
+    val isManual: Boolean = false,
+    val manualReason: String? = null
 )

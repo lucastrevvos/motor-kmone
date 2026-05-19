@@ -36,11 +36,71 @@ data class RadarDebugState(
     val lastVisualOfferLikeScore: Int? = null,
     val lastAcceptedForOcrFuture: Boolean? = null,
     val lastVisualProbeReason: String? = null,
+    val lastOcrDurationMs: Long? = null,
+    val lastOcrSuccess: Boolean? = null,
+    val lastOcrCropKind: String? = null,
+    val lastOcrRawTextPreview: String? = null,
+    val lastOcrPolicyReason: String? = null,
+    val lastFingerprintKind: String? = null,
+    val lastFingerprintPlatformHint: String? = null,
+    val lastFingerprintOfferLikeScore: Int? = null,
+    val lastFingerprintNonOfferScore: Int? = null,
+    val lastFingerprintPricePreview: String? = null,
+    val lastFingerprintReason: String? = null,
+    val lastDedupeResult: String? = null,
+    val lastDedupeClusterId: String? = null,
+    val lastDedupeQuality: Int? = null,
+    val lastDedupeReason: String? = null,
+    val lastDedupeIsBest: Boolean? = null,
+    val activeOfferClusterCount: Int = 0,
+    val lastBestOfferPreview: String? = null,
+    val lastBestOfferMainPrice: String? = null,
+    val lastBestOfferPlatform: String? = null,
+    val lastParserResultStatus: String? = null,
+    val lastParsedClusterId: String? = null,
+    val lastParsedPlatform: String? = null,
+    val lastParsedProduct: String? = null,
+    val lastParsedPrice: String? = null,
+    val lastParsedValuePerKm: String? = null,
+    val lastParsedPickupTime: String? = null,
+    val lastParsedPickupDistance: String? = null,
+    val lastParsedTripTime: String? = null,
+    val lastParsedTripDistance: String? = null,
+    val lastParsedConfidence: String? = null,
+    val lastParserWarnings: String? = null,
+    val lastParsedSanityStatus: String? = null,
+    val lastParsedSanityIssues: String? = null,
+    val lastParsedShouldBlockEconomicDecision: Boolean? = null,
+    val lastEconomicDecision: String? = null,
+    val lastEconomicDecisionScore: Int? = null,
+    val lastEconomicDecisionConfidence: String? = null,
+    val lastEconomicDecisionReasons: String? = null,
+    val lastEconomicGrossPerTripKm: String? = null,
+    val lastEconomicGrossPerTotalKm: String? = null,
+    val lastEconomicTotalDistanceKm: String? = null,
+    val lastEconomicTotalTimeMin: String? = null,
+    val lastEconomicDecisionClusterId: String? = null,
     val lastOfferCycleKind: String? = null,
     val lastOfferCycleId: String? = null,
     val lastOfferCycleReason: String? = null,
     val lastOfferCycleShouldPreferForOcr: Boolean? = null,
-    val lastOfferCycleTimeSincePreviousMs: Long? = null
+    val lastOfferCycleTimeSincePreviousMs: Long? = null,
+    val lastManualAnalysisEpoch: Long? = null,
+    val lastManualAnalysisStatus: String? = null,
+    val lastManualAnalysisDurationMs: Long? = null,
+    val lastManualFingerprintKind: String? = null,
+    val lastManualFingerprintPreview: String? = null,
+    val lastManualClickAcceptedAtMs: Long? = null,
+    val lastManualClickRejectedReason: String? = null,
+    val manualAnalysisRunning: Boolean = false,
+    val manualCooldownRemainingMs: Long = 0L,
+    val lastManualSecondaryOcrStatus: String? = null,
+    val lastManualBitmapWarning: String? = null,
+    val piuOverlayPermissionGranted: Boolean = false,
+    val piuOverlayShowing: Boolean = false,
+    val piuLastX: Int = 0,
+    val piuLastAnalyzeClickedAtMs: Long? = null,
+    val piuLastError: String? = null
 )
 
 object RadarDebugStore {
@@ -169,6 +229,135 @@ object RadarDebugStore {
         }
     }
 
+    fun updateOcrSummary(
+        durationMs: Long?,
+        success: Boolean?,
+        cropKind: String?,
+        rawTextPreview: String?,
+        policyReason: String
+    ) {
+        mutableState.update {
+            it.copy(
+                lastOcrDurationMs = durationMs,
+                lastOcrSuccess = success,
+                lastOcrCropKind = cropKind,
+                lastOcrRawTextPreview = rawTextPreview,
+                lastOcrPolicyReason = policyReason
+            )
+        }
+    }
+
+    fun updateFingerprintSummary(
+        kind: String,
+        platformHint: String,
+        offerLikeScore: Int,
+        nonOfferScore: Int,
+        pricePreview: String?,
+        reason: String
+    ) {
+        mutableState.update {
+            it.copy(
+                lastFingerprintKind = kind,
+                lastFingerprintPlatformHint = platformHint,
+                lastFingerprintOfferLikeScore = offerLikeScore,
+                lastFingerprintNonOfferScore = nonOfferScore,
+                lastFingerprintPricePreview = pricePreview,
+                lastFingerprintReason = reason
+            )
+        }
+    }
+
+    fun updateDedupeSummary(
+        result: String,
+        clusterId: String?,
+        quality: Int?,
+        reason: String,
+        isBest: Boolean,
+        activeClusterCount: Int,
+        bestOfferPreview: String?,
+        bestOfferMainPrice: String?,
+        bestOfferPlatform: String?
+    ) {
+        mutableState.update {
+            it.copy(
+                lastDedupeResult = result,
+                lastDedupeClusterId = clusterId,
+                lastDedupeQuality = quality,
+                lastDedupeReason = reason,
+                lastDedupeIsBest = isBest,
+                activeOfferClusterCount = activeClusterCount,
+                lastBestOfferPreview = bestOfferPreview,
+                lastBestOfferMainPrice = bestOfferMainPrice,
+                lastBestOfferPlatform = bestOfferPlatform
+            )
+        }
+    }
+
+    fun updateParserSummary(
+        status: String,
+        clusterId: String? = null,
+        platform: String? = null,
+        product: String? = null,
+        price: String? = null,
+        valuePerKm: String? = null,
+        pickupTime: String? = null,
+        pickupDistance: String? = null,
+        tripTime: String? = null,
+        tripDistance: String? = null,
+        confidence: String? = null,
+        warnings: String? = null,
+        sanityStatus: String? = null,
+        sanityIssues: String? = null,
+        shouldBlockEconomicDecision: Boolean? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastParserResultStatus = status,
+                lastParsedClusterId = clusterId ?: it.lastParsedClusterId,
+                lastParsedPlatform = platform ?: it.lastParsedPlatform,
+                lastParsedProduct = product ?: it.lastParsedProduct,
+                lastParsedPrice = price ?: it.lastParsedPrice,
+                lastParsedValuePerKm = valuePerKm ?: it.lastParsedValuePerKm,
+                lastParsedPickupTime = pickupTime ?: it.lastParsedPickupTime,
+                lastParsedPickupDistance = pickupDistance ?: it.lastParsedPickupDistance,
+                lastParsedTripTime = tripTime ?: it.lastParsedTripTime,
+                lastParsedTripDistance = tripDistance ?: it.lastParsedTripDistance,
+                lastParsedConfidence = confidence ?: it.lastParsedConfidence,
+                lastParserWarnings = warnings ?: it.lastParserWarnings,
+                lastParsedSanityStatus = sanityStatus ?: it.lastParsedSanityStatus,
+                lastParsedSanityIssues = sanityIssues ?: it.lastParsedSanityIssues,
+                lastParsedShouldBlockEconomicDecision = shouldBlockEconomicDecision
+                    ?: it.lastParsedShouldBlockEconomicDecision
+            )
+        }
+    }
+
+    fun updateEconomicDecisionSummary(
+        decision: String,
+        score: Int? = null,
+        confidence: String? = null,
+        reasons: String? = null,
+        grossPerTripKm: String? = null,
+        grossPerTotalKm: String? = null,
+        totalDistanceKm: String? = null,
+        totalTimeMin: String? = null,
+        clusterId: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastEconomicDecision = decision,
+                lastEconomicDecisionScore = score,
+                lastEconomicDecisionConfidence = confidence ?: it.lastEconomicDecisionConfidence,
+                lastEconomicDecisionReasons = reasons ?: it.lastEconomicDecisionReasons,
+                lastEconomicGrossPerTripKm = grossPerTripKm ?: it.lastEconomicGrossPerTripKm,
+                lastEconomicGrossPerTotalKm = grossPerTotalKm ?: it.lastEconomicGrossPerTotalKm,
+                lastEconomicTotalDistanceKm = totalDistanceKm ?: it.lastEconomicTotalDistanceKm,
+                lastEconomicTotalTimeMin = totalTimeMin ?: it.lastEconomicTotalTimeMin,
+                lastEconomicDecisionClusterId = clusterId ?: it.lastEconomicDecisionClusterId
+            )
+        }
+    }
+
     fun updateOfferCycle(classification: OfferCycleClassification) {
         mutableState.update {
             it.copy(
@@ -177,6 +366,62 @@ object RadarDebugStore {
                 lastOfferCycleReason = classification.reason,
                 lastOfferCycleShouldPreferForOcr = classification.shouldPreferForOcr,
                 lastOfferCycleTimeSincePreviousMs = classification.timeSincePreviousMs
+            )
+        }
+    }
+
+    fun updateManualAnalysis(
+        epoch: Long,
+        status: String,
+        durationMs: Long? = null,
+        fingerprintKind: String? = null,
+        fingerprintPreview: String? = null,
+        secondaryOcrStatus: String? = null,
+        bitmapWarning: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastManualAnalysisEpoch = epoch,
+                lastManualAnalysisStatus = status,
+                lastManualAnalysisDurationMs = durationMs ?: it.lastManualAnalysisDurationMs,
+                lastManualFingerprintKind = fingerprintKind ?: it.lastManualFingerprintKind,
+                lastManualFingerprintPreview = fingerprintPreview ?: it.lastManualFingerprintPreview,
+                lastManualSecondaryOcrStatus = secondaryOcrStatus ?: it.lastManualSecondaryOcrStatus,
+                lastManualBitmapWarning = bitmapWarning ?: it.lastManualBitmapWarning
+            )
+        }
+    }
+
+    fun updateManualControlState(
+        acceptedAtMs: Long? = null,
+        lastRejectedReason: String? = null,
+        running: Boolean? = null,
+        cooldownRemainingMs: Long? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastManualClickAcceptedAtMs = acceptedAtMs ?: it.lastManualClickAcceptedAtMs,
+                lastManualClickRejectedReason = lastRejectedReason ?: it.lastManualClickRejectedReason,
+                manualAnalysisRunning = running ?: it.manualAnalysisRunning,
+                manualCooldownRemainingMs = cooldownRemainingMs ?: it.manualCooldownRemainingMs
+            )
+        }
+    }
+
+    fun updatePiuOverlayState(
+        permissionGranted: Boolean,
+        showing: Boolean,
+        x: Int,
+        analyzeClickedAtMs: Long? = null,
+        error: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                piuOverlayPermissionGranted = permissionGranted,
+                piuOverlayShowing = showing,
+                piuLastX = x,
+                piuLastAnalyzeClickedAtMs = analyzeClickedAtMs ?: it.piuLastAnalyzeClickedAtMs,
+                piuLastError = error
             )
         }
     }

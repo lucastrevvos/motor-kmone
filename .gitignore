@@ -13,3 +13,19 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Android/local debug outputs
+**/debug_visual_probe/
+**/debug99_a11y/
+**/debug_window_stack/
+**/debug_ocr/
+**/debug_fingerprint/
+*.log
+
+# Build
+.gradle/
+build/
+app/build/
+
+# IDE
+.idea/
