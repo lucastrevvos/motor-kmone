@@ -195,6 +195,31 @@ class VisualOfferProbeTest {
     }
 
     @Test
+    fun autoBurstPreferredCropOrder_prioritizesLowerHalf() {
+        val observation = observation(
+            triggerSource = TriggerSource.UBER_AUTO_BURST_RECOVERY,
+            metadata = ObservationMetadata(
+                notes = mapOf(
+                    "autoBurstPreferredCropOrder" to "LOWER_HALF,PLATFORM_SPECIFIC_CANDIDATE,FLOATING_BOUNDS_EXPANDED,CENTER_CARD_AREA"
+                )
+            )
+        )
+        val candidates = listOf(
+            candidate("center", CropKind.CENTER_CARD_AREA),
+            candidate("lower", CropKind.LOWER_HALF)
+        )
+        val results = listOf(
+            result("center", CropKind.CENTER_CARD_AREA, score = 8),
+            result("lower", CropKind.LOWER_HALF, score = 5)
+        )
+
+        val ranking = probe.rankCandidates(observation, candidates, results)
+
+        assertEquals(CropKind.LOWER_HALF, ranking.bestCandidate?.kind)
+        assertEquals("selected_by_trigger_priority_lower_half", ranking.reason)
+    }
+
+    @Test
     fun noValidCandidate_returnsNullBestCandidate() {
         val observation = observation(triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE)
         val candidates = listOf(candidate("full", CropKind.FULL_DEBUG))
@@ -208,7 +233,8 @@ class VisualOfferProbeTest {
 
     private fun observation(
         triggerSource: TriggerSource,
-        floatingKind: FloatingWindowKind = FloatingWindowKind.UNKNOWN_FLOATING
+        floatingKind: FloatingWindowKind = FloatingWindowKind.UNKNOWN_FLOATING,
+        metadata: ObservationMetadata = ObservationMetadata()
     ) = ScreenObservation(
         id = "obs",
         createdAtMs = 1L,
@@ -237,7 +263,7 @@ class VisualOfferProbeTest {
             timeSincePreviousMs = null,
             shouldPreferForOcr = false
         ),
-        metadata = ObservationMetadata()
+        metadata = metadata
     )
 
     private fun candidate(id: String, kind: CropKind) = CropCandidate(

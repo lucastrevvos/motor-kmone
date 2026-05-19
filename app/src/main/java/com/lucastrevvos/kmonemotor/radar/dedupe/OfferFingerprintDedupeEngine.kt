@@ -340,6 +340,7 @@ class OfferFingerprintDedupeEngine(
             TriggerSource.UBER_FLOATING_WINDOW,
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            TriggerSource.UBER_AUTO_BURST_RECOVERY,
             TriggerSource.UBER_STATE_TRANSITION -> "uber"
 
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,

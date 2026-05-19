@@ -36,6 +36,22 @@ data class RadarDebugState(
     val lastVisualOfferLikeScore: Int? = null,
     val lastAcceptedForOcrFuture: Boolean? = null,
     val lastVisualProbeReason: String? = null,
+    val lastAutoVisionRecoveryApplied: Boolean? = null,
+    val lastAutoVisionRecoveryReason: String? = null,
+    val lastAutoVisionRecoveryCropKind: String? = null,
+    val lastAutoPostTransitionOverridden: Boolean? = null,
+    val lastAutoRecoverySuppressedReason: String? = null,
+    val lastAutoBurstScheduled: Boolean? = null,
+    val lastAutoBurstReason: String? = null,
+    val lastAutoBurstDelayMs: Long? = null,
+    val lastAutoBurstAttempt: Int? = null,
+    val lastAutoBurstResult: String? = null,
+    val lastAutoBurstSuppressedReason: String? = null,
+    val lastAutoBurstPreferredCropOrder: String? = null,
+    val lastFloatingObstructionDetected: Boolean? = null,
+    val lastFloatingObstructionReason: String? = null,
+    val lastFloatingObstructionCropKind: String? = null,
+    val lastFloatingObstructionConfidence: Int? = null,
     val lastOcrDurationMs: Long? = null,
     val lastOcrSuccess: Boolean? = null,
     val lastOcrCropKind: String? = null,
@@ -80,6 +96,20 @@ data class RadarDebugState(
     val lastEconomicTotalDistanceKm: String? = null,
     val lastEconomicTotalTimeMin: String? = null,
     val lastEconomicDecisionClusterId: String? = null,
+    val lastPresentationKind: String? = null,
+    val lastPresentationTitle: String? = null,
+    val lastPresentationShortReason: String? = null,
+    val lastPresentationPrimaryMetric: String? = null,
+    val lastPresentationSecondaryMetric: String? = null,
+    val lastPresentationExpiresAtMs: Long? = null,
+    val lastPresentationSource: String? = null,
+    val lastDecisionOverlayVisible: Boolean = false,
+    val lastDecisionOverlayKind: String? = null,
+    val lastDecisionOverlayTitle: String? = null,
+    val lastDecisionOverlayShortReason: String? = null,
+    val lastDecisionOverlayShownAtMs: Long? = null,
+    val lastDecisionOverlayExpiresAtMs: Long? = null,
+    val lastDecisionOverlayError: String? = null,
     val lastOfferCycleKind: String? = null,
     val lastOfferCycleId: String? = null,
     val lastOfferCycleReason: String? = null,
@@ -229,6 +259,62 @@ object RadarDebugStore {
         }
     }
 
+    fun updateAutomaticRecoverySummary(
+        applied: Boolean? = null,
+        reason: String? = null,
+        cropKind: String? = null,
+        postTransitionOverridden: Boolean? = null,
+        suppressedReason: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastAutoVisionRecoveryApplied = applied ?: it.lastAutoVisionRecoveryApplied,
+                lastAutoVisionRecoveryReason = reason ?: it.lastAutoVisionRecoveryReason,
+                lastAutoVisionRecoveryCropKind = cropKind ?: it.lastAutoVisionRecoveryCropKind,
+                lastAutoPostTransitionOverridden = postTransitionOverridden ?: it.lastAutoPostTransitionOverridden,
+                lastAutoRecoverySuppressedReason = suppressedReason ?: it.lastAutoRecoverySuppressedReason
+            )
+        }
+    }
+
+    fun updateAutoBurstSummary(
+        scheduled: Boolean? = null,
+        reason: String? = null,
+        delayMs: Long? = null,
+        attempt: Int? = null,
+        result: String? = null,
+        suppressedReason: String? = null,
+        preferredCropOrder: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastAutoBurstScheduled = scheduled ?: it.lastAutoBurstScheduled,
+                lastAutoBurstReason = reason ?: it.lastAutoBurstReason,
+                lastAutoBurstDelayMs = delayMs ?: it.lastAutoBurstDelayMs,
+                lastAutoBurstAttempt = attempt ?: it.lastAutoBurstAttempt,
+                lastAutoBurstResult = result ?: it.lastAutoBurstResult,
+                lastAutoBurstSuppressedReason = suppressedReason ?: it.lastAutoBurstSuppressedReason,
+                lastAutoBurstPreferredCropOrder = preferredCropOrder ?: it.lastAutoBurstPreferredCropOrder
+            )
+        }
+    }
+
+    fun updateFloatingObstructionSummary(
+        detected: Boolean? = null,
+        reason: String? = null,
+        cropKind: String? = null,
+        confidence: Int? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastFloatingObstructionDetected = detected ?: it.lastFloatingObstructionDetected,
+                lastFloatingObstructionReason = reason ?: it.lastFloatingObstructionReason,
+                lastFloatingObstructionCropKind = cropKind ?: it.lastFloatingObstructionCropKind,
+                lastFloatingObstructionConfidence = confidence ?: it.lastFloatingObstructionConfidence
+            )
+        }
+    }
+
     fun updateOcrSummary(
         durationMs: Long?,
         success: Boolean?,
@@ -354,6 +440,50 @@ object RadarDebugStore {
                 lastEconomicTotalDistanceKm = totalDistanceKm ?: it.lastEconomicTotalDistanceKm,
                 lastEconomicTotalTimeMin = totalTimeMin ?: it.lastEconomicTotalTimeMin,
                 lastEconomicDecisionClusterId = clusterId ?: it.lastEconomicDecisionClusterId
+            )
+        }
+    }
+
+    fun updateDecisionPresentationSummary(
+        kind: String,
+        title: String? = null,
+        shortReason: String? = null,
+        primaryMetric: String? = null,
+        secondaryMetric: String? = null,
+        expiresAtMs: Long? = null,
+        source: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastPresentationKind = kind,
+                lastPresentationTitle = title ?: it.lastPresentationTitle,
+                lastPresentationShortReason = shortReason ?: it.lastPresentationShortReason,
+                lastPresentationPrimaryMetric = primaryMetric ?: it.lastPresentationPrimaryMetric,
+                lastPresentationSecondaryMetric = secondaryMetric ?: it.lastPresentationSecondaryMetric,
+                lastPresentationExpiresAtMs = expiresAtMs ?: it.lastPresentationExpiresAtMs,
+                lastPresentationSource = source ?: it.lastPresentationSource
+            )
+        }
+    }
+
+    fun updateDecisionOverlaySummary(
+        visible: Boolean,
+        kind: String? = null,
+        title: String? = null,
+        shortReason: String? = null,
+        shownAtMs: Long? = null,
+        expiresAtMs: Long? = null,
+        error: String? = null
+    ) {
+        mutableState.update {
+            it.copy(
+                lastDecisionOverlayVisible = visible,
+                lastDecisionOverlayKind = kind ?: it.lastDecisionOverlayKind,
+                lastDecisionOverlayTitle = title ?: it.lastDecisionOverlayTitle,
+                lastDecisionOverlayShortReason = shortReason ?: it.lastDecisionOverlayShortReason,
+                lastDecisionOverlayShownAtMs = shownAtMs ?: it.lastDecisionOverlayShownAtMs,
+                lastDecisionOverlayExpiresAtMs = expiresAtMs ?: it.lastDecisionOverlayExpiresAtMs,
+                lastDecisionOverlayError = error
             )
         }
     }

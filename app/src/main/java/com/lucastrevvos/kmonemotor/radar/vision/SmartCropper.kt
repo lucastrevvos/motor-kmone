@@ -11,6 +11,9 @@ class SmartCropper {
         val width = observation.screenshotWidth
         val height = observation.screenshotHeight
         if (width <= 0 || height <= 0) return emptyList()
+        val effectiveTriggerSource = observation.metadata.notes["autoBurstOriginalTriggerSource"]
+            ?.let { runCatching { TriggerSource.valueOf(it) }.getOrNull() }
+            ?: observation.triggerSource
 
         val candidates = mutableListOf<CropCandidate>()
         candidates += candidate(
@@ -58,7 +61,7 @@ class SmartCropper {
             )
         }
 
-        val platformSpecificRect = when (observation.triggerSource) {
+        val platformSpecificRect = when (effectiveTriggerSource) {
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC -> Rect(
                 0,
                 (height * 0.20).roundToInt(),

@@ -47,6 +47,24 @@ class OfferTextFingerprintExtractorTest {
     }
 
     @Test
+    fun integerPriceWithoutDecimal_isNormalizedInOfferContext() {
+        val fingerprint = extractor.extract(
+            ocr("UberX R$ 746 3 min (1.7 km)")
+        )
+
+        assertTrue(fingerprint.priceCandidates.any { it.normalizedValue == 7.46 })
+    }
+
+    @Test
+    fun fourDigitIntegerPriceWithoutDecimal_isNormalizedInOfferContext() {
+        val fingerprint = extractor.extract(
+            ocr("Uber R$ 1071 11 min (4.7 km)")
+        )
+
+        assertTrue(fingerprint.priceCandidates.any { it.normalizedValue == 10.71 })
+    }
+
+    @Test
     fun uberXTextBeatsNinetyNineTrigger() {
         val fingerprint = extractor.extract(
             ocr(
@@ -95,6 +113,16 @@ class OfferTextFingerprintExtractorTest {
         assertEquals(OfferTextFingerprintKind.NON_OFFER, fingerprint.kind)
         assertTrue(fingerprint.negativeSignals.any { it.key == "99_abastece" })
         assertTrue(fingerprint.negativeSignals.any { it.key == "posto" })
+    }
+
+    @Test
+    fun fuelPromoIntegerPrice_isNotNormalizedAsOfferPrice() {
+        val fingerprint = extractor.extract(
+            ocr("99 Abastece Posto Santa Monica Rede Primos R$ 479")
+        )
+
+        assertTrue(fingerprint.priceCandidates.any { it.normalizedValue == 479.0 })
+        assertEquals(OfferTextFingerprintKind.NON_OFFER, fingerprint.kind)
     }
 
     @Test

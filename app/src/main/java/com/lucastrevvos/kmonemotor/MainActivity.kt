@@ -234,7 +234,23 @@ private fun RadarDebugScreen(debugState: RadarDebugState) {
                     "bestCropKind=${debugState.lastBestCropKind}",
                     "visualOfferLikeScore=${debugState.lastVisualOfferLikeScore}",
                     "acceptedForOcrFuture=${debugState.lastAcceptedForOcrFuture}",
-                    "visualProbeReason=${debugState.lastVisualProbeReason}"
+                    "visualProbeReason=${debugState.lastVisualProbeReason}",
+                    "autoRecoveryApplied=${debugState.lastAutoVisionRecoveryApplied}",
+                    "autoRecoveryReason=${debugState.lastAutoVisionRecoveryReason}",
+                    "autoRecoveryCropKind=${debugState.lastAutoVisionRecoveryCropKind}",
+                    "autoPostTransitionOverridden=${debugState.lastAutoPostTransitionOverridden}",
+                    "autoRecoverySuppressedReason=${debugState.lastAutoRecoverySuppressedReason}",
+                    "autoBurstScheduled=${debugState.lastAutoBurstScheduled}",
+                    "autoBurstReason=${debugState.lastAutoBurstReason}",
+                    "autoBurstDelayMs=${debugState.lastAutoBurstDelayMs}",
+                    "autoBurstAttempt=${debugState.lastAutoBurstAttempt}",
+                    "autoBurstResult=${debugState.lastAutoBurstResult}",
+                    "autoBurstSuppressedReason=${debugState.lastAutoBurstSuppressedReason}",
+                    "autoBurstPreferredCropOrder=${debugState.lastAutoBurstPreferredCropOrder}",
+                    "floatingObstructionDetected=${debugState.lastFloatingObstructionDetected}",
+                    "floatingObstructionReason=${debugState.lastFloatingObstructionReason}",
+                    "floatingObstructionCropKind=${debugState.lastFloatingObstructionCropKind}",
+                    "floatingObstructionConfidence=${debugState.lastFloatingObstructionConfidence}"
                 )
             )
             DebugCard(
@@ -302,6 +318,30 @@ private fun RadarDebugScreen(debugState: RadarDebugState) {
                     "totalDistanceKm=${debugState.lastEconomicTotalDistanceKm}",
                     "totalTimeMin=${debugState.lastEconomicTotalTimeMin}",
                     "reasons=${debugState.lastEconomicDecisionReasons}"
+                )
+            )
+            DebugCard(
+                title = "Decision Presentation",
+                lines = listOf(
+                    "kind=${debugState.lastPresentationKind}",
+                    "title=${debugState.lastPresentationTitle}",
+                    "reason=${debugState.lastPresentationShortReason}",
+                    "primaryMetric=${debugState.lastPresentationPrimaryMetric}",
+                    "secondaryMetric=${debugState.lastPresentationSecondaryMetric}",
+                    "expiresAtMs=${debugState.lastPresentationExpiresAtMs}",
+                    "source=${debugState.lastPresentationSource}"
+                )
+            )
+            DebugCard(
+                title = "Decision Overlay",
+                lines = listOf(
+                    "visible=${debugState.lastDecisionOverlayVisible}",
+                    "kind=${debugState.lastDecisionOverlayKind}",
+                    "title=${debugState.lastDecisionOverlayTitle}",
+                    "reason=${debugState.lastDecisionOverlayShortReason}",
+                    "shownAtMs=${debugState.lastDecisionOverlayShownAtMs}",
+                    "expiresAtMs=${debugState.lastDecisionOverlayExpiresAtMs}",
+                    "error=${debugState.lastDecisionOverlayError}"
                 )
             )
             DebugCard(
@@ -389,6 +429,22 @@ private fun RadarDebugScreenPreview() {
                 lastVisualOfferLikeScore = 8,
                 lastAcceptedForOcrFuture = true,
                 lastVisualProbeReason = "best_candidate_score",
+                lastAutoVisionRecoveryApplied = true,
+                lastAutoVisionRecoveryReason = "ocr_allowed_auto_recovery_lower_half",
+                lastAutoVisionRecoveryCropKind = "LOWER_HALF",
+                lastAutoPostTransitionOverridden = false,
+                lastAutoRecoverySuppressedReason = null,
+                lastAutoBurstScheduled = true,
+                lastAutoBurstReason = "map_home_contamination",
+                lastAutoBurstDelayMs = 300L,
+                lastAutoBurstAttempt = 1,
+                lastAutoBurstResult = "offer_like",
+                lastAutoBurstSuppressedReason = null,
+                lastAutoBurstPreferredCropOrder = "LOWER_HALF,PLATFORM_SPECIFIC_CANDIDATE,FLOATING_BOUNDS_EXPANDED,CENTER_CARD_AREA",
+                lastFloatingObstructionDetected = true,
+                lastFloatingObstructionReason = "floating_bounds_overlap_critical_area",
+                lastFloatingObstructionCropKind = "FLOATING_BOUNDS_EXPANDED",
+                lastFloatingObstructionConfidence = 90,
                 lastOcrDurationMs = 45,
                 lastOcrSuccess = true,
                 lastOcrCropKind = "LOWER_HALF",
@@ -433,6 +489,20 @@ private fun RadarDebugScreenPreview() {
                 lastEconomicGrossPerTotalKm = "1.84",
                 lastEconomicTotalDistanceKm = "10.0",
                 lastEconomicTotalTimeMin = "11.0",
+                lastPresentationKind = "SHOW_WARNING",
+                lastPresentationTitle = "Atencao",
+                lastPresentationShortReason = "Corrida curta",
+                lastPresentationPrimaryMetric = "R$ 1,84/km total",
+                lastPresentationSecondaryMetric = "10,0 km total",
+                lastPresentationExpiresAtMs = 123456799L,
+                lastPresentationSource = "AUTOMATIC",
+                lastDecisionOverlayVisible = true,
+                lastDecisionOverlayKind = "SHOW_WARNING",
+                lastDecisionOverlayTitle = "Atencao",
+                lastDecisionOverlayShortReason = "Corrida curta",
+                lastDecisionOverlayShownAtMs = 123456790L,
+                lastDecisionOverlayExpiresAtMs = 123456799L,
+                lastDecisionOverlayError = null,
                 lastOfferCycleKind = "NEW_OFFER_CYCLE",
                 lastOfferCycleId = "cycle-123",
                 lastOfferCycleReason = "no_previous_cycle",

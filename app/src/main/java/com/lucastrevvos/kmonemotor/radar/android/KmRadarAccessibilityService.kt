@@ -19,6 +19,7 @@ import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.decision.DecisionSource
 import com.lucastrevvos.kmonemotor.radar.decision.EconomicDecisionDebugWriter
 import com.lucastrevvos.kmonemotor.radar.decision.EconomicDecisionProcessor
+import com.lucastrevvos.kmonemotor.radar.decisionoverlay.DecisionOverlayRuntime
 import com.lucastrevvos.kmonemotor.radar.dedupe.OfferFingerprintDedupeDebugWriter
 import com.lucastrevvos.kmonemotor.radar.dedupe.OfferFingerprintDedupeEngine
 import com.lucastrevvos.kmonemotor.radar.dedupe.OfferFingerprintDedupeProcessor
@@ -33,6 +34,7 @@ import com.lucastrevvos.kmonemotor.radar.manual.ManualSecondaryOcrBitmapPreparer
 import com.lucastrevvos.kmonemotor.radar.manual.PreparedManualCrop
 import com.lucastrevvos.kmonemotor.radar.manual.ManualSecondaryOcrPreparationResult
 import com.lucastrevvos.kmonemotor.radar.observation.ScreenObservation
+import com.lucastrevvos.kmonemotor.radar.observation.ScreenObservationFactory
 import com.lucastrevvos.kmonemotor.radar.ocr.MlKitRegionalOcrEngine
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrCandidate
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrDebugWriter
@@ -43,16 +45,26 @@ import com.lucastrevvos.kmonemotor.radar.orchestrator.ManualAnalysisContext
 import com.lucastrevvos.kmonemotor.radar.orchestrator.RadarCaptureOrchestrator
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserDebugWriter
+import com.lucastrevvos.kmonemotor.radar.presentation.DecisionPresentationDebugWriter
+import com.lucastrevvos.kmonemotor.radar.presentation.DecisionPresentationProcessor
 import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
+import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstInput
+import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstPolicy
+import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstScheduler
 import com.lucastrevvos.kmonemotor.radar.signals.NodeTreeSignature
 import com.lucastrevvos.kmonemotor.radar.signals.FloatingWindowClassifier
 import com.lucastrevvos.kmonemotor.radar.signals.OperationalStateTracker
 import com.lucastrevvos.kmonemotor.radar.signals.RadarSignalLayer
 import com.lucastrevvos.kmonemotor.radar.vision.CropCandidate
 import com.lucastrevvos.kmonemotor.radar.vision.CropKind
+import com.lucastrevvos.kmonemotor.radar.vision.AutomaticVisionRecoveryPolicy
+import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionAction
+import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionGuard
+import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionResult
 import com.lucastrevvos.kmonemotor.radar.vision.SmartCropper
 import com.lucastrevvos.kmonemotor.radar.vision.VisualOfferProbe
 import com.lucastrevvos.kmonemotor.radar.vision.VisualOfferProbeResult
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.Executors
@@ -66,9 +78,14 @@ class KmRadarAccessibilityService : AccessibilityService() {
     private val operationalStateTracker = OperationalStateTracker()
     private val signalLayer = RadarSignalLayer()
     private val smartCropper = SmartCropper()
+    private val screenObservationFactory = ScreenObservationFactory()
     private val screenshotCapturer by lazy { AccessibilityScreenshotCapturer(this, clock) }
     private val visualOfferProbe by lazy { VisualOfferProbe(this, clock = clock) }
     private val ocrRunPolicy = OcrRunPolicy()
+    private val automaticVisionRecoveryPolicy = AutomaticVisionRecoveryPolicy()
+    private val floatingObstructionGuard = FloatingObstructionGuard()
+    private val automaticCaptureBurstPolicy = AutomaticCaptureBurstPolicy()
+    private val automaticCaptureBurstScheduler = AutomaticCaptureBurstScheduler()
     private val ocrDebugWriter by lazy { OcrDebugWriter(this) }
     private val fingerprintExtractor = OfferTextFingerprintExtractor(clock = clock)
     private val fingerprintDebugWriter by lazy { OfferTextFingerprintDebugWriter(this) }
@@ -92,6 +109,12 @@ class KmRadarAccessibilityService : AccessibilityService() {
             debugWriter = EconomicDecisionDebugWriter(this)
         )
     }
+    private val decisionPresentationProcessor by lazy {
+        DecisionPresentationProcessor(
+            clock = clock,
+            debugWriter = DecisionPresentationDebugWriter(this)
+        )
+    }
     private val manualAnalysisPlanner = ManualAnalysisPlanner()
     private val manualBitmapPreparer = ManualSecondaryOcrBitmapPreparer(AndroidManualCropFactory)
     private val visionExecutor = Executors.newSingleThreadExecutor()
@@ -99,6 +122,12 @@ class KmRadarAccessibilityService : AccessibilityService() {
     private val manualAnalysisListener: (ManualAnalysisRequest) -> Unit = { handleManualAnalysisRequest(it) }
     private val manualTimings = mutableMapOf<Long, ManualAnalysisTiming>()
     private val finalizedManualEpochs = mutableSetOf<Long>()
+    private val autoBurstCaptureInFlight = AtomicBoolean(false)
+    private val serviceDestroyed = AtomicBoolean(false)
+    private val burstContextByObservationId = mutableMapOf<String, AutoBurstContext>()
+    private val observationsById = mutableMapOf<String, ScreenObservation>()
+    private val floatingObstructionByObservationId = mutableMapOf<String, FloatingObstructionResult>()
+    private val automaticCaptureSourcesByObservationId = mutableMapOf<String, AutomaticCaptureSourceSnapshot>()
     private var latestWindowSnapshot: WindowStackSnapshot? = null
     private var latestNodeSignature: NodeTreeSignature? = null
     private var latestFloatingKind: FloatingWindowKind = FloatingWindowKind.UNKNOWN_FLOATING
@@ -198,10 +227,13 @@ class KmRadarAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        serviceDestroyed.set(true)
+        automaticCaptureBurstScheduler.destroy()
         RadarDebugStore.updateServiceActive(false)
         visionExecutor.shutdownNow()
         ManualAnalysisRequestBus.unregister(manualAnalysisListener)
         PiuOverlayRuntime.get(this).destroy()
+        DecisionOverlayRuntime.get(this).destroy()
         RadarLogger.w(
             "KM_V2_SIGNAL",
             "KM_V2_ACCESSIBILITY_SERVICE_DESTROYED",
@@ -220,6 +252,14 @@ class KmRadarAccessibilityService : AccessibilityService() {
     }
 
     private fun handleManualAnalysisRequest(request: ManualAnalysisRequest) {
+        if (automaticCaptureBurstScheduler.hasPending()) {
+            automaticCaptureBurstScheduler.cancel("manual")
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_BURST_CANCELLED_BY_MANUAL",
+                "source" to request.source
+            )
+        }
         val requestedAtMs = request.clickedAtMs
         val epoch = AnalysisEpochController.bumpManualEpoch()
         manualTimings[epoch] = ManualAnalysisTiming(clickedAtMs = requestedAtMs)
@@ -262,6 +302,8 @@ class KmRadarAccessibilityService : AccessibilityService() {
 
     private fun onObservationCreated(observation: ScreenObservation, result: com.lucastrevvos.kmonemotor.radar.android.ScreenshotCaptureResult) {
         val bitmap = result.screenshotBitmap ?: return
+        observationsById[observation.id] = observation
+        registerAutomaticCaptureSource(observation)
         visionExecutor.execute {
             try {
                 if (isStale(observation.analysisEpoch)) {
@@ -295,6 +337,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     finalizeManualAnalysis(observation, null, "failed")
                 }
             } finally {
+                burstContextByObservationId.remove(observation.id)
+                observationsById.remove(observation.id)
+                floatingObstructionByObservationId.remove(observation.id)
                 if (!bitmap.isRecycled) {
                     bitmap.recycle()
                 }
@@ -601,7 +646,44 @@ class KmRadarAccessibilityService : AccessibilityService() {
         visualResult: VisualOfferProbeResult,
         screenshotBitmap: Bitmap
     ) {
-        val policy = ocrRunPolicy.decide(observation, visualResult)
+        val candidates = smartCropper.createCandidates(observation)
+        val obstructionResult = evaluateFloatingObstruction(observation, visualResult, candidates)
+        val adjustedVisualResult = applyFloatingObstructionAdjustment(
+            observation = observation,
+            visualResult = visualResult,
+            candidates = candidates,
+            obstructionResult = obstructionResult
+        )
+        val recoveryDecision = evaluateAutomaticVisionRecovery(observation, adjustedVisualResult, candidates)
+        val effectiveVisualResult = buildEffectiveVisualResult(adjustedVisualResult, recoveryDecision)
+        updateAutomaticCaptureSource(
+            observationId = observation.id,
+            selectedCropKind = effectiveVisualResult.bestCandidate?.kind
+        )
+        var policy = ocrRunPolicy.decide(observation, effectiveVisualResult)
+        if (recoveryDecision.overridePostTransition && policy.reason == "ocr_skipped_post_transition") {
+            RadarLogger.i(
+                "KM_V2_OCR",
+                "KM_V2_AUTO_POST_TRANSITION_OVERRIDDEN",
+                "observationId" to observation.id,
+                "triggerSource" to observation.triggerSource,
+                "cropKind" to effectiveVisualResult.bestCandidate?.kind
+            )
+            policy = OcrRunPolicy.OcrPolicyDecision(
+                shouldRun = true,
+                reason = recoveryDecision.reason
+            )
+        } else if (policy.shouldRun && recoveryDecision.shouldForceOcr && recoveryDecision.reason != policy.reason) {
+            RadarLogger.i(
+                "KM_V2_OCR",
+                "KM_V2_AUTO_OCR_ALLOWED_BY_STRONG_TRIGGER",
+                "observationId" to observation.id,
+                "triggerSource" to observation.triggerSource,
+                "cropKind" to effectiveVisualResult.bestCandidate?.kind,
+                "reason" to recoveryDecision.reason
+            )
+            policy = policy.copy(reason = recoveryDecision.reason)
+        }
         RadarLogger.i(
             "KM_V2_OCR",
             "KM_V2_OCR_POLICY_DECISION",
@@ -609,12 +691,12 @@ class KmRadarAccessibilityService : AccessibilityService() {
             "shouldRun" to policy.shouldRun,
             "reason" to policy.reason,
             "offerCycleKind" to observation.offerCycleClassification?.kind,
-            "cropKind" to visualResult.bestCandidate?.kind
+            "cropKind" to effectiveVisualResult.bestCandidate?.kind
         )
         RadarDebugStore.updateOcrSummary(
             durationMs = null,
             success = null,
-            cropKind = visualResult.bestCandidate?.kind?.name,
+            cropKind = effectiveVisualResult.bestCandidate?.kind?.name,
             rawTextPreview = null,
             policyReason = policy.reason
         )
@@ -622,14 +704,217 @@ class KmRadarAccessibilityService : AccessibilityService() {
             return
         }
 
-        val bestCandidate = visualResult.bestCandidate ?: return
+        val bestCandidate = effectiveVisualResult.bestCandidate ?: return
         executeOcrCandidate(
             observation = observation,
             selectedCandidate = bestCandidate,
             screenshotBitmap = screenshotBitmap,
-            acceptedForOcrFuture = visualResult.acceptedForOcrFuture,
-            candidateReason = visualResult.reason,
+            acceptedForOcrFuture = effectiveVisualResult.acceptedForOcrFuture,
+            candidateReason = effectiveVisualResult.reason,
             policyReason = policy.reason
+        )
+    }
+
+    private fun evaluateAutomaticVisionRecovery(
+        observation: ScreenObservation,
+        visualResult: VisualOfferProbeResult,
+        candidates: List<CropCandidate>
+    ): AutomaticVisionRecoveryPolicy.AutomaticVisionRecoveryDecision {
+        val recoveryDecision = automaticVisionRecoveryPolicy.decide(
+            observation = observation,
+            visualResult = visualResult,
+            candidates = candidates,
+            nowMs = clock.nowMs()
+        )
+        RadarLogger.i(
+            "KM_V2_VISION",
+            "KM_V2_AUTO_VISION_RECOVERY_EVALUATED",
+            "observationId" to observation.id,
+            "triggerSource" to observation.triggerSource,
+            "visualReason" to visualResult.reason,
+            "recoveryReason" to recoveryDecision.reason
+        )
+        when (recoveryDecision.suppressionReason) {
+            "cooldown_suppressed" -> {
+                RadarLogger.i(
+                    "KM_V2_VISION",
+                    "KM_V2_AUTO_RECOVERY_COOLDOWN_SUPPRESSED",
+                    "observationId" to observation.id,
+                    "triggerSource" to observation.triggerSource
+                )
+            }
+
+            "attempt_limit_reached" -> {
+                RadarLogger.i(
+                    "KM_V2_VISION",
+                    "KM_V2_AUTO_RECOVERY_ATTEMPT_LIMIT_REACHED",
+                    "observationId" to observation.id,
+                    "triggerSource" to observation.triggerSource
+                )
+            }
+        }
+        if (recoveryDecision.recoveryApplied && visualResult.bestCandidate == null && recoveryDecision.selectedCandidate != null) {
+            val fallbackReason = when (recoveryDecision.selectedCandidate.kind) {
+                CropKind.LOWER_HALF -> "auto_recovery_lower_half"
+                CropKind.CENTER_CARD_AREA -> "auto_recovery_center_card"
+                else -> "auto_recovery_candidate"
+            }
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_AUTO_VISION_FALLBACK_APPLIED",
+                "observationId" to observation.id,
+                "triggerSource" to observation.triggerSource,
+                "fromReason" to visualResult.reason,
+                "cropKind" to recoveryDecision.selectedCandidate.kind,
+                "reason" to fallbackReason
+            )
+        } else if (!recoveryDecision.shouldForceOcr && recoveryDecision.suppressionReason != "not_needed") {
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_AUTO_VISION_RECOVERY_SKIPPED",
+                "observationId" to observation.id,
+                "triggerSource" to observation.triggerSource,
+                "reason" to recoveryDecision.suppressionReason
+            )
+        }
+        RadarDebugStore.updateAutomaticRecoverySummary(
+            applied = recoveryDecision.recoveryApplied || recoveryDecision.overridePostTransition,
+            reason = recoveryDecision.reason,
+            cropKind = recoveryDecision.selectedCandidate?.kind?.name,
+            postTransitionOverridden = recoveryDecision.overridePostTransition,
+            suppressedReason = recoveryDecision.suppressionReason
+        )
+        return recoveryDecision
+    }
+
+    private fun evaluateFloatingObstruction(
+        observation: ScreenObservation,
+        visualResult: VisualOfferProbeResult,
+        candidates: List<CropCandidate>
+    ): FloatingObstructionResult {
+        val result = floatingObstructionGuard.evaluate(
+            observation = observation,
+            visualResult = visualResult,
+            candidates = candidates
+        )
+        floatingObstructionByObservationId[observation.id] = result
+        RadarLogger.i(
+            "KM_V2_VISION",
+            "KM_V2_FLOATING_OBSTRUCTION_EVALUATED",
+            "observationId" to observation.id,
+            "triggerSource" to observation.triggerSource,
+            "enabled" to com.lucastrevvos.kmonemotor.radar.core.RadarFeatureFlags.ENABLE_FLOATING_OBSTRUCTION_GUARD,
+            "detected" to result.detected,
+            "obstructionRect" to result.obstructionRect?.flattenToString(),
+            "selectedCropKind" to visualResult.bestCandidate?.kind,
+            "overlapsCriticalOfferArea" to result.overlapsCriticalOfferArea,
+            "confidence" to result.confidence,
+            "reason" to result.reason,
+            "suggestedAction" to result.suggestedAction
+        )
+        RadarDebugStore.updateFloatingObstructionSummary(
+            detected = result.detected,
+            reason = result.reason,
+            cropKind = visualResult.bestCandidate?.kind?.name,
+            confidence = result.confidence
+        )
+        updateAutomaticCaptureSource(
+            observationId = observation.id,
+            obstructionResult = result,
+            obstructionAction = result.suggestedAction
+        )
+        return result
+    }
+
+    private fun applyFloatingObstructionAdjustment(
+        observation: ScreenObservation,
+        visualResult: VisualOfferProbeResult,
+        candidates: List<CropCandidate>,
+        obstructionResult: FloatingObstructionResult
+    ): VisualOfferProbeResult {
+        val selectedCandidate = visualResult.bestCandidate ?: return visualResult
+        if (!obstructionResult.detected ||
+            !obstructionResult.overlapsCriticalOfferArea ||
+            obstructionResult.suggestedAction != FloatingObstructionAction.TRY_ALTERNATIVE_CROP ||
+            selectedCandidate.kind != CropKind.FLOATING_BOUNDS_EXPANDED
+        ) {
+            return visualResult
+        }
+        val alternativeCandidate = selectAlternativeObstructionCandidate(
+            observation = observation,
+            selectedCandidate = selectedCandidate,
+            candidates = candidates,
+            visualResult = visualResult
+        ) ?: return visualResult
+        RadarLogger.i(
+            "KM_V2_VISION",
+            "KM_V2_FLOATING_OBSTRUCTION_ALTERNATIVE_CROP_SELECTED",
+            "observationId" to observation.id,
+            "fromCropKind" to selectedCandidate.kind,
+            "toCropKind" to alternativeCandidate.kind,
+            "reason" to "floating_bounds_expanded_obstructed"
+        )
+        updateAutomaticCaptureSource(
+            observationId = observation.id,
+            selectedCropKind = alternativeCandidate.kind,
+            obstructionResult = obstructionResult,
+            obstructionAction = obstructionResult.suggestedAction,
+            alternativeCropApplied = true,
+            originalCropKind = selectedCandidate.kind
+        )
+        return visualResult.copy(
+            bestCandidate = alternativeCandidate,
+            reason = "floating_obstruction_alternative_crop"
+        )
+    }
+
+    private fun selectAlternativeObstructionCandidate(
+        observation: ScreenObservation,
+        selectedCandidate: CropCandidate,
+        candidates: List<CropCandidate>,
+        visualResult: VisualOfferProbeResult
+    ): CropCandidate? {
+        val probeByCropId = visualResult.allProbeResults.associateBy { it.cropId }
+        val preferredKinds = when (observation.triggerSource) {
+            TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
+            TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            TriggerSource.UBER_AUTO_BURST_RECOVERY -> listOf(
+                CropKind.CENTER_CARD_AREA,
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
+                CropKind.LOWER_HALF
+            )
+            TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> listOf(
+                CropKind.LOWER_HALF,
+                CropKind.CENTER_CARD_AREA,
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE
+            )
+            else -> listOf(CropKind.CENTER_CARD_AREA, CropKind.PLATFORM_SPECIFIC_CANDIDATE, CropKind.LOWER_HALF)
+        }
+        return preferredKinds.asSequence()
+            .mapNotNull { preferredKind ->
+                candidates.firstOrNull { candidate ->
+                    candidate.kind == preferredKind &&
+                        candidate.id != selectedCandidate.id &&
+                        candidate.width >= 40 &&
+                        candidate.height >= 40 &&
+                        probeByCropId[candidate.id]?.rejectionReason == null
+                }
+            }
+            .firstOrNull()
+    }
+
+    private fun buildEffectiveVisualResult(
+        visualResult: VisualOfferProbeResult,
+        recoveryDecision: AutomaticVisionRecoveryPolicy.AutomaticVisionRecoveryDecision
+    ): VisualOfferProbeResult {
+        if (!recoveryDecision.shouldForceOcr) {
+            return visualResult
+        }
+        return visualResult.copy(
+            bestCandidate = recoveryDecision.selectedCandidate ?: visualResult.bestCandidate,
+            acceptedForOcrFuture = if (recoveryDecision.forcedAcceptance) true else visualResult.acceptedForOcrFuture,
+            reason = recoveryDecision.reason
         )
     }
 
@@ -883,6 +1168,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 reason = fingerprint.reason
             )
             fingerprintDebugWriter.write(fingerprint, observation)
+            val burstOutcome = if (!observation.isManual) {
+                maybeScheduleAutomaticBurst(observation, fingerprint)
+            } else {
+                AutoBurstOutcome()
+            }
             try {
                 val dedupeResult = dedupeProcessor.process(fingerprint, observation)
                 RadarDebugStore.updateDedupeSummary(
@@ -929,6 +1219,32 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     totalTimeMin = decisionResult.result?.metrics?.totalTimeMin?.toString(),
                     clusterId = decisionResult.result?.clusterId
                 )
+                val presentationResult = decisionPresentationProcessor.process(decisionResult)
+                RadarDebugStore.updateDecisionPresentationSummary(
+                    kind = presentationResult.presentation?.kind?.name ?: "DO_NOT_SHOW",
+                    title = presentationResult.presentation?.title,
+                    shortReason = presentationResult.presentation?.shortReason ?: presentationResult.reason,
+                    primaryMetric = presentationResult.presentation?.primaryMetric,
+                    secondaryMetric = presentationResult.presentation?.secondaryMetric,
+                    expiresAtMs = presentationResult.presentation?.expiresAtMs,
+                    source = presentationResult.presentation?.source?.name
+                )
+                presentationResult.presentation?.let { presentation ->
+                    DecisionOverlayRuntime.get(this).showPresentation(presentation)
+                }
+                logOfferPipelineFinalResult(
+                    observation = observation,
+                    fingerprint = fingerprint,
+                    parserStatus = parserResult.status,
+                    parserReason = parserResult.reason,
+                    decisionStatus = decisionResult.status,
+                    decisionReason = decisionResult.result?.decision?.name ?: decisionResult.reason,
+                    presentationStatus = presentationResult.status,
+                    presentationReason = presentationResult.presentation?.kind?.name ?: presentationResult.reason,
+                    wasOverlayShown = presentationResult.presentation != null,
+                    overlayKind = presentationResult.presentation?.kind?.name,
+                    burstOutcome = burstOutcome
+                )
             } catch (throwable: Throwable) {
                 RadarLogger.w(
                     "KM_V2_DEDUPE",
@@ -936,6 +1252,12 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     "observationId" to observation.observationId,
                     "error" to throwable.message,
                     "stacktrace" to throwable.stackTraceToString()
+                )
+                logOfferPipelineFinalResult(
+                    observation = observation,
+                    fingerprint = fingerprint,
+                    finalReason = "dedupe_or_downstream_failed",
+                    burstOutcome = burstOutcome
                 )
             }
             if (observation.isManual) {
@@ -1066,4 +1388,410 @@ class KmRadarAccessibilityService : AccessibilityService() {
             else -> null
         }
     }
+
+    private fun registerAutomaticCaptureSource(observation: ScreenObservation) {
+        if (observation.isManual) return
+        val burstContext = burstContextByObservationId[observation.id]
+        val snapshot = AutomaticCaptureSourceSnapshot(
+            observationId = observation.id,
+            triggerSource = observation.triggerSource,
+            selectedCropKind = null,
+            attempt = burstContext?.attempt ?: 0,
+            createdAtMs = observation.createdAtMs,
+            sourceObservation = burstContext?.sourceObservation ?: observation,
+            originalTriggerSource = burstContext?.originalTriggerSource ?: observation.triggerSource
+        )
+        automaticCaptureSourcesByObservationId[observation.id] = snapshot
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_SOURCE_REGISTERED",
+            "observationId" to observation.id,
+            "triggerSource" to observation.triggerSource,
+            "selectedCropKind" to snapshot.selectedCropKind,
+            "attempt" to snapshot.attempt,
+            "createdAtMs" to snapshot.createdAtMs
+        )
+    }
+
+    private fun updateAutomaticCaptureSource(
+        observationId: String,
+        selectedCropKind: CropKind? = null,
+        obstructionResult: FloatingObstructionResult? = null,
+        obstructionAction: FloatingObstructionAction? = null,
+        alternativeCropApplied: Boolean? = null,
+        originalCropKind: CropKind? = null
+    ) {
+        val current = automaticCaptureSourcesByObservationId[observationId] ?: return
+        automaticCaptureSourcesByObservationId[observationId] = current.copy(
+            selectedCropKind = selectedCropKind ?: current.selectedCropKind,
+            obstructionResult = obstructionResult ?: current.obstructionResult,
+            obstructionAction = obstructionAction ?: current.obstructionAction,
+            alternativeCropApplied = alternativeCropApplied ?: current.alternativeCropApplied,
+            originalCropKind = originalCropKind ?: current.originalCropKind
+        )
+    }
+
+    private fun consumeAutomaticCaptureSource(observationId: String): AutomaticCaptureSourceSnapshot? {
+        return automaticCaptureSourcesByObservationId.remove(observationId)
+    }
+
+    private fun logOfferPipelineFinalResult(
+        observation: OcrObservation,
+        fingerprint: OfferTextFingerprint,
+        parserStatus: String? = null,
+        parserReason: String? = null,
+        decisionStatus: String? = null,
+        decisionReason: String? = null,
+        presentationStatus: String? = null,
+        presentationReason: String? = null,
+        wasOverlayShown: Boolean = false,
+        overlayKind: String? = null,
+        burstOutcome: AutoBurstOutcome = AutoBurstOutcome(),
+        finalReason: String? = null
+    ) {
+        val sourceSnapshot = consumeAutomaticCaptureSource(observation.observationId)
+        val obstructionResult = sourceSnapshot?.obstructionResult
+        val resolvedFinalReason = finalReason
+            ?: burstOutcome.reason?.takeIf { burstOutcome.scheduled }
+            ?: presentationReason
+            ?: decisionReason
+            ?: parserReason
+            ?: fingerprint.reason
+        RadarLogger.i(
+            "KM_V2_PIPELINE",
+            "KM_V2_OFFER_PIPELINE_FINAL_RESULT",
+            "observationId" to observation.observationId,
+            "triggerSource" to observation.triggerSource,
+            "selectedCropKind" to (sourceSnapshot?.selectedCropKind ?: observation.cropKind),
+            "fingerprintKind" to fingerprint.kind,
+            "platform" to fingerprint.platformTextHint,
+            "wasObstructionSuspected" to (obstructionResult?.detected == true),
+            "obstructionReason" to obstructionResult?.reason,
+            "obstructionAction" to sourceSnapshot?.obstructionAction,
+            "alternativeCropApplied" to sourceSnapshot?.alternativeCropApplied,
+            "originalCropKind" to sourceSnapshot?.originalCropKind,
+            "wasRetryScheduled" to burstOutcome.scheduled,
+            "wasOverlayShown" to wasOverlayShown,
+            "overlayKind" to overlayKind,
+            "wasPersisted" to "unknown",
+            "parserStatus" to parserStatus,
+            "decisionStatus" to decisionStatus,
+            "presentationStatus" to presentationStatus,
+            "finalReason" to resolvedFinalReason
+        )
+    }
+
+    private fun maybeScheduleAutomaticBurst(
+        observation: OcrObservation,
+        fingerprint: OfferTextFingerprint
+    ): AutoBurstOutcome {
+        val context = burstContextByObservationId[observation.observationId]
+        val attempt = context?.attempt ?: 0
+        val sourceSnapshot = automaticCaptureSourcesByObservationId[observation.observationId]
+        val obstructionResult = sourceSnapshot?.obstructionResult ?: floatingObstructionByObservationId[observation.observationId]
+        if (attempt > 0) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_BURST_RESULT",
+                "observationId" to observation.observationId,
+                "kind" to fingerprint.kind,
+                "attempt" to attempt
+            )
+            RadarDebugStore.updateAutoBurstSummary(
+                attempt = attempt,
+                result = fingerprint.kind.name.lowercase()
+            )
+        }
+        val decision = automaticCaptureBurstPolicy.evaluate(
+            AutomaticCaptureBurstInput(
+                observationId = observation.observationId,
+                triggerSource = observation.triggerSource,
+                cropKind = observation.cropKind,
+                rawOcrText = observation.rawText,
+                fingerprintKind = fingerprint.kind,
+                platformHint = fingerprint.platformTextHint,
+                createdAtMs = observation.finishedAtMs,
+                captureStartedAtMs = observation.startedAtMs,
+                attempt = attempt,
+                obstructionSuspected = obstructionResult?.detected == true,
+                obstructionOverlapsCriticalArea = obstructionResult?.overlapsCriticalOfferArea == true
+            ),
+            nowMs = clock.nowMs()
+        )
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_EVALUATED",
+            "observationId" to observation.observationId,
+            "triggerSource" to observation.triggerSource,
+            "fingerprintKind" to fingerprint.kind,
+            "attempt" to attempt,
+            "reason" to decision.reason
+        )
+        if (fingerprint.kind == OfferTextFingerprintKind.UNKNOWN &&
+            obstructionResult?.detected == true &&
+            obstructionResult.overlapsCriticalOfferArea
+        ) {
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_FLOATING_OBSTRUCTION_UNKNOWN_GUARD_APPLIED",
+                "observationId" to observation.observationId,
+                "triggerSource" to observation.triggerSource,
+                "fingerprintKind" to fingerprint.kind,
+                "previousReason" to fingerprint.reason,
+                "newReason" to "possible_floating_obstruction",
+                "retryScheduled" to decision.shouldScheduleBurst
+            )
+        }
+        if (!decision.shouldScheduleBurst) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_BURST_SKIPPED",
+                "observationId" to observation.observationId,
+                "reason" to decision.reason
+            )
+            RadarDebugStore.updateAutoBurstSummary(
+                scheduled = false,
+                reason = decision.reason,
+                attempt = attempt,
+                suppressedReason = decision.reason
+            )
+            if (attempt > 0) {
+                RadarDebugStore.updateAutoBurstSummary(result = fingerprint.kind.name.lowercase())
+            }
+            return AutoBurstOutcome(
+                scheduled = false,
+                reason = decision.reason,
+                attempt = attempt
+            )
+        }
+        val sourceObservation = context?.sourceObservation
+            ?: sourceSnapshot?.sourceObservation
+            ?: observationsById[observation.observationId]
+        if (sourceObservation == null) {
+            val missingField = when {
+                sourceSnapshot == null && context == null -> "source_snapshot"
+                observationsById[observation.observationId] == null -> "source_observation"
+                else -> "unknown"
+            }
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_BURST_SOURCE_MISSING_DETAIL",
+                "observationId" to observation.observationId,
+                "missingField" to missingField,
+                "triggerSource" to observation.triggerSource,
+                "selectedCropKind" to (sourceSnapshot?.selectedCropKind ?: observation.cropKind),
+                "attempt" to attempt
+            )
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_BURST_SUPPRESSED",
+                "observationId" to observation.observationId,
+                "reason" to "source_observation_missing"
+            )
+            return AutoBurstOutcome(
+                scheduled = false,
+                reason = "source_observation_missing",
+                attempt = attempt
+            )
+        }
+        val burstContext = AutoBurstContext(
+            sourceObservation = sourceObservation,
+            originalTriggerSource = context?.originalTriggerSource ?: observation.triggerSource,
+            attempt = attempt + 1,
+            preferredCropOrder = decision.preferredCropOrder,
+            scheduledAtMs = clock.nowMs(),
+            obstructionResult = obstructionResult
+        )
+        val token = "${sourceObservation.captureRequestId}:${burstContext.attempt}"
+        automaticCaptureBurstScheduler.schedule(
+            token = token,
+            delayMs = decision.delayMs
+        ) {
+            executeAutomaticBurst(token, burstContext)
+        }
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_RETRY_SCHEDULED",
+            "observationId" to observation.observationId,
+            "triggerSource" to observation.triggerSource,
+            "attempt" to burstContext.attempt,
+            "delayMs" to decision.delayMs,
+            "reason" to decision.reason
+        )
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_SCHEDULED",
+              "observationId" to observation.observationId,
+              "delayMs" to decision.delayMs,
+              "preferredCropOrder" to decision.preferredCropOrder.joinToString(","),
+              "attempt" to burstContext.attempt,
+              "reason" to decision.reason
+          )
+        if (decision.reason == "possible_floating_obstruction") {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_FLOATING_OBSTRUCTION_RETRY_REQUESTED",
+                "observationId" to observation.observationId,
+                "triggerSource" to observation.triggerSource,
+                "delayMs" to decision.delayMs,
+                "reason" to "possible_floating_obstruction"
+            )
+        }
+        RadarDebugStore.updateAutoBurstSummary(
+            scheduled = true,
+            reason = decision.reason,
+            delayMs = decision.delayMs,
+            attempt = burstContext.attempt,
+            preferredCropOrder = decision.preferredCropOrder.joinToString(",")
+        )
+        return AutoBurstOutcome(
+            scheduled = true,
+            reason = decision.reason,
+            delayMs = decision.delayMs,
+            attempt = burstContext.attempt
+        )
+    }
+
+    private fun executeAutomaticBurst(
+        token: String,
+        burstContext: AutoBurstContext
+    ) {
+        if (serviceDestroyed.get()) {
+            RadarLogger.i("KM_V2_AUTO", "KM_V2_AUTO_BURST_STALE_IGNORED", "reason" to "service_destroyed", "token" to token)
+            RadarDebugStore.updateAutoBurstSummary(suppressedReason = "service_destroyed")
+            return
+        }
+        if (ManualAnalysisState.isRunning()) {
+            RadarLogger.i("KM_V2_AUTO", "KM_V2_AUTO_BURST_STALE_IGNORED", "reason" to "manual_epoch_changed", "token" to token)
+            RadarDebugStore.updateAutoBurstSummary(suppressedReason = "manual_epoch_changed")
+            return
+        }
+        val ageMs = clock.nowMs() - burstContext.sourceObservation.requestCreatedAtMs
+        if (ageMs > com.lucastrevvos.kmonemotor.radar.core.RadarFeatureFlags.AUTO_CAPTURE_BURST_MAX_AGE_MS) {
+            RadarLogger.i("KM_V2_AUTO", "KM_V2_AUTO_BURST_STALE_IGNORED", "reason" to "too_old", "token" to token, "ageMs" to ageMs)
+            RadarDebugStore.updateAutoBurstSummary(suppressedReason = "too_old")
+            return
+        }
+        if (!autoBurstCaptureInFlight.compareAndSet(false, true)) {
+            RadarLogger.i("KM_V2_AUTO", "KM_V2_AUTO_BURST_SUPPRESSED", "reason" to "active_capture_busy", "token" to token)
+            RadarDebugStore.updateAutoBurstSummary(suppressedReason = "active_capture_busy")
+            return
+        }
+        val request = buildAutomaticBurstRequest(burstContext)
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_STARTED",
+            "requestId" to request.id,
+            "attempt" to burstContext.attempt,
+            "originalTriggerSource" to burstContext.originalTriggerSource
+        )
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_AUTO_BURST_SCREENSHOT_STARTED",
+            "requestId" to request.id,
+            "triggerSource" to request.triggerSource
+        )
+        screenshotCapturer.capture(
+            request = request,
+            onSuccess = { burstRequest, result ->
+                val baseObservation = screenObservationFactory.create(burstRequest, result)
+                val enrichedObservation = baseObservation.copy(
+                    metadata = baseObservation.metadata.copy(
+                        notes = baseObservation.metadata.notes + mapOf(
+                            "autoBurstAttempt" to burstContext.attempt.toString(),
+                            "autoBurstOriginalTriggerSource" to burstContext.originalTriggerSource.name,
+                            "autoBurstPreferredCropOrder" to burstContext.preferredCropOrder.joinToString(","),
+                            "autoBurstSourceObservationId" to burstContext.sourceObservation.id,
+                            "floatingObstructionDetected" to (burstContext.obstructionResult?.detected?.toString() ?: "false"),
+                            "floatingObstructionReason" to (burstContext.obstructionResult?.reason ?: "none")
+                        )
+                    )
+                )
+                burstContextByObservationId[enrichedObservation.id] = burstContext
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_BURST_CROP_ORDER_APPLIED",
+                    "observationId" to enrichedObservation.id,
+                    "preferredCropOrder" to burstContext.preferredCropOrder.joinToString(",")
+                )
+                onObservationCreated(enrichedObservation, result)
+            },
+            onFailure = { burstRequest, error, _, _, _, _ ->
+                RadarLogger.w(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_BURST_SUPPRESSED",
+                    "requestId" to burstRequest.id,
+                    "reason" to "screenshot_failed",
+                    "error" to error
+                )
+                RadarDebugStore.updateAutoBurstSummary(suppressedReason = "screenshot_failed")
+            },
+            onFinished = { _, _ ->
+                autoBurstCaptureInFlight.set(false)
+            }
+        )
+    }
+
+    private fun buildAutomaticBurstRequest(burstContext: AutoBurstContext): com.lucastrevvos.kmonemotor.radar.orchestrator.CaptureRequest {
+        val nowMs = clock.nowMs()
+        val cycleId = burstContext.sourceObservation.offerCycleClassification?.cycleId ?: "burst-${UUID.randomUUID()}"
+        val classification = com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleClassification(
+            kind = com.lucastrevvos.kmonemotor.radar.cycle.OfferCycleKind.UNKNOWN,
+            cycleId = cycleId,
+            previousCycleId = burstContext.sourceObservation.offerCycleClassification?.cycleId,
+            reason = "automatic_burst_recovery",
+            timeSincePreviousMs = nowMs - burstContext.sourceObservation.capturedAtMs,
+            shouldPreferForOcr = true
+        )
+        return com.lucastrevvos.kmonemotor.radar.orchestrator.CaptureRequest(
+            id = UUID.randomUUID().toString(),
+            sourceEventAtMs = burstContext.sourceObservation.createdAtMs,
+            signalEmittedAtMs = burstContext.sourceObservation.createdAtMs,
+            createdAtMs = nowMs,
+            approvedAtMs = nowMs,
+            triggerSource = TriggerSource.UBER_AUTO_BURST_RECOVERY,
+            platformHint = burstContext.sourceObservation.visualPlatformHint ?: inferPlatformHint(
+                dominantPackage = burstContext.sourceObservation.dominantPackage,
+                floatingPackage = burstContext.sourceObservation.floatingPackage,
+                nodeTreePackage = null
+            ),
+            priority = com.lucastrevvos.kmonemotor.radar.orchestrator.CapturePriority.HIGH,
+            dominantPackage = burstContext.sourceObservation.dominantPackage,
+            floatingPackage = burstContext.sourceObservation.floatingPackage,
+            floatingBounds = burstContext.sourceObservation.floatingBounds,
+            floatingKind = burstContext.sourceObservation.floatingKind,
+            reason = "uber_auto_burst_recovery_capture",
+            offerCycleClassification = classification
+        )
+    }
+
+    private data class AutoBurstContext(
+        val sourceObservation: ScreenObservation,
+        val originalTriggerSource: TriggerSource,
+        val attempt: Int,
+        val preferredCropOrder: List<CropKind>,
+        val scheduledAtMs: Long,
+        val obstructionResult: FloatingObstructionResult? = null
+    )
+
+    private data class AutoBurstOutcome(
+        val scheduled: Boolean = false,
+        val reason: String? = null,
+        val delayMs: Long? = null,
+        val attempt: Int = 0
+    )
+
+    private data class AutomaticCaptureSourceSnapshot(
+        val observationId: String,
+        val triggerSource: TriggerSource,
+        val selectedCropKind: CropKind?,
+        val attempt: Int,
+        val createdAtMs: Long,
+        val sourceObservation: ScreenObservation,
+        val originalTriggerSource: TriggerSource,
+        val obstructionResult: FloatingObstructionResult? = null,
+        val obstructionAction: FloatingObstructionAction? = null,
+        val alternativeCropApplied: Boolean = false,
+        val originalCropKind: CropKind? = null
+    )
 }

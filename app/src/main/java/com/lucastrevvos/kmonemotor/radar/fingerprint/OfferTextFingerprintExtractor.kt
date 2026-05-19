@@ -2,6 +2,7 @@ package com.lucastrevvos.kmonemotor.radar.fingerprint
 
 import com.lucastrevvos.kmonemotor.radar.core.RadarClock
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrObservation
 import com.lucastrevvos.kmonemotor.radar.platform.PlatformInferenceEngine
 import com.lucastrevvos.kmonemotor.radar.platform.PlatformInferenceInput
@@ -23,7 +24,7 @@ class OfferTextFingerprintExtractor(
             )
         }
 
-        val priceCandidates = extractPriceCandidates(normalized)
+        val priceCandidates = extractPriceCandidates(normalized, observation.observationId)
         val valuePerKmCandidates = extractValuePerKmCandidates(normalized)
         val distanceCandidates = extractDistanceCandidates(normalized)
         val timeCandidates = extractTimeCandidates(normalized)
@@ -146,16 +147,25 @@ class OfferTextFingerprintExtractor(
         createdAtMs = clock.nowMs()
     )
 
-    private fun extractPriceCandidates(normalized: NormalizedOcrText): List<ExtractedNumericCandidate> {
+    private fun extractPriceCandidates(
+        normalized: NormalizedOcrText,
+        observationId: String
+    ): List<ExtractedNumericCandidate> {
         val text = normalized.normalizedText
         return PRICE_REGEX.findAll(text)
             .mapNotNull { match ->
                 val full = match.value
                 val immediateSuffix = text.substring((match.range.last + 1).coerceAtMost(text.length), (match.range.last + 5).coerceAtMost(text.length))
                 if ("/km" in immediateSuffix) return@mapNotNull null
+                val numericToken = match.groupValues[1]
                 ExtractedNumericCandidate(
                     raw = full,
-                    normalizedValue = parseDecimal(match.groupValues[1]),
+                    normalizedValue = parsePriceDecimal(
+                        rawToken = full,
+                        numericToken = numericToken,
+                        normalizedText = text,
+                        observationId = observationId
+                    ),
                     unit = "BRL",
                     kind = "PRICE",
                     confidence = if ("r$" in full) 3 else 2
@@ -267,9 +277,51 @@ class OfferTextFingerprintExtractor(
         return stripped.takeIf { it.isNotBlank() }?.let(::sha256)
     }
 
+    private fun parsePriceDecimal(
+        rawToken: String,
+        numericToken: String,
+        normalizedText: String,
+        observationId: String
+    ): Double? {
+        val direct = parseDecimal(numericToken) ?: return null
+        if (numericToken.contains(",") || numericToken.contains(".")) {
+            return direct
+        }
+        val integerValue = direct.toInt()
+        val inSuspiciousIntegerRange = direct >= 100.0 && direct <= 9999.0 && direct % 1.0 == 0.0
+        if (!inSuspiciousIntegerRange) {
+            return direct
+        }
+        if (!hasStrongOfferPriceContext(normalizedText) || looksLikeFuelPromoContext(normalizedText)) {
+            return direct
+        }
+        val normalizedValue = direct / 100.0
+        if (normalizedValue !in 3.0..300.0) {
+            return direct
+        }
+        RadarLogger.i(
+            "KM_V2_FINGERPRINT",
+            "KM_V2_PRICE_NORMALIZED",
+            "observationId" to observationId,
+            "rawToken" to rawToken,
+            "rawValue" to direct,
+            "normalizedValue" to normalizedValue,
+            "reason" to "missing_decimal_separator_in_offer_context"
+        )
+        return normalizedValue
+    }
+
     private fun parseDecimal(raw: String): Double? {
         val normalized = raw.replace(",", ".").replace(Regex("[^0-9\\.]"), "")
         return normalized.toDoubleOrNull()
+    }
+
+    private fun hasStrongOfferPriceContext(text: String): Boolean {
+        return OFFER_PRICE_CONTEXT_PATTERNS.any { it.containsMatchIn(text) }
+    }
+
+    private fun looksLikeFuelPromoContext(text: String): Boolean {
+        return FUEL_PROMO_PATTERNS.any { it.containsMatchIn(text) }
     }
 
     private fun sha256(raw: String): String {
@@ -324,6 +376,23 @@ class OfferTextFingerprintExtractor(
             SignalDef("online", listOf("voce esta online", "online"), 1),
             SignalDef("offline", listOf("voce esta offline", "offline"), 1),
             SignalDef("procurando_corridas", listOf("procurando corridas"), 2)
+        )
+
+        val OFFER_PRICE_CONTEXT_PATTERNS = listOf(
+            Regex("\\buberx\\b|\\buber\\b|\\bentrega\\b|\\bcarro\\b|\\b99\\b"),
+            Regex("corrida|verificado|exclusivo|priority|prioritario"),
+            Regex("\\d+\\s*min(?:utos)?"),
+            Regex("\\d+[,.]?\\d*\\s*km")
+        )
+
+        val FUEL_PROMO_PATTERNS = listOf(
+            Regex("99 abastece"),
+            Regex("\\babastece\\b"),
+            Regex("\\bposto\\b"),
+            Regex("rede primos"),
+            Regex("\\blitro\\b"),
+            Regex("gasolina"),
+            Regex("etanol")
         )
 
     }
