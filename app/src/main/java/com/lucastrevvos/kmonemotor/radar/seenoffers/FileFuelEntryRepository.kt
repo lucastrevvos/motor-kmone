@@ -19,6 +19,15 @@ class FileFuelEntryRepository(
         loadEntries().sortedByDescending { it.createdAtMs }.take(limit)
     }
 
+    override fun updateFuelEntry(entry: FuelEntry): FuelEntry? = synchronized(lock) {
+        val entries = loadEntries().toMutableList()
+        val index = entries.indexOfFirst { it.id == entry.id }
+        if (index == -1) return null
+        entries[index] = entry
+        persistEntries(entries)
+        entry
+    }
+
     override fun deleteFuelEntry(id: String): Boolean = synchronized(lock) {
         val entries = loadEntries()
         val filtered = entries.filterNot { it.id == id }

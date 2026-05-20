@@ -12,5 +12,6 @@ data class FuelEntry(
 interface FuelEntryRepository {
     fun saveFuelEntry(entry: FuelEntry): FuelEntry
     fun listFuelEntries(limit: Int = 500): List<FuelEntry>
+    fun updateFuelEntry(entry: FuelEntry): FuelEntry?
     fun deleteFuelEntry(id: String): Boolean
 }

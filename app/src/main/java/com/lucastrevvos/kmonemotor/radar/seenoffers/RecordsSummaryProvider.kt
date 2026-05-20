@@ -69,6 +69,16 @@ class RecordsSummaryProvider(
             .sortedByDescending { it.acceptedAtMs }
     }
 
+    fun filterFuelEntries(
+        fuelEntries: List<FuelEntry>,
+        period: RecordsPeriodFilter,
+        nowMs: Long = System.currentTimeMillis()
+    ): List<FuelEntry> {
+        val zoneId = zoneIdProvider()
+        return fuelEntries.filter { it.createdAtMs.isInside(period, nowMs, zoneId) }
+            .sortedByDescending { it.createdAtMs }
+    }
+
     private fun rideDistanceKm(ride: SavedRide): Double? {
         return ride.totalDistanceKm
             ?: when {

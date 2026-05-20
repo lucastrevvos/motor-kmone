@@ -147,6 +147,21 @@ private data class HomeUiState(
     val errorMessage: String? = null
 )
 
+private sealed class RecordsListItem {
+    abstract val stableId: String
+    abstract val timestampMs: Long
+
+    data class RideItem(val ride: SavedRide) : RecordsListItem() {
+        override val stableId: String = "ride:${ride.id}"
+        override val timestampMs: Long = ride.acceptedAtMs
+    }
+
+    data class FuelItem(val fuelEntry: FuelEntry) : RecordsListItem() {
+        override val stableId: String = "fuel:${fuelEntry.id}"
+        override val timestampMs: Long = fuelEntry.createdAtMs
+    }
+}
+
 @Composable
 private fun KmOneApp(debugState: RadarDebugState) {
     val context = LocalContext.current
@@ -169,6 +184,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
     var selectedTab by remember { mutableStateOf(AppTab.HOME) }
     var seenState by remember { mutableStateOf(SeenOffersUiState(isLoading = true)) }
     var savedRides by remember { mutableStateOf<List<SavedRide>>(emptyList()) }
+    var fuelEntries by remember { mutableStateOf<List<FuelEntry>>(emptyList()) }
     var ridesLoading by remember { mutableStateOf(true) }
     var ridesError by remember { mutableStateOf<String?>(null) }
     var homeState by remember { mutableStateOf(HomeUiState(isLoading = true)) }
@@ -208,6 +224,20 @@ private fun KmOneApp(debugState: RadarDebugState) {
         }
     }
 
+    suspend fun reloadFuelEntries(): List<FuelEntry> {
+        return runCatching {
+            withContext(Dispatchers.IO) {
+                module.fuelEntryRepository.listFuelEntries(limit = 500)
+            }
+        }.onSuccess { entries ->
+            fuelEntries = entries
+        }.onFailure {
+            fuelEntries = emptyList()
+        }.getOrElse {
+            emptyList()
+        }
+    }
+
     suspend fun reloadDriverSettings(): DriverSettings {
         return withContext(Dispatchers.IO) {
             module.driverSettingsRepository.getSettings()
@@ -222,6 +252,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
             reloadDriverSettings()
             val offers = reloadSeenOffers()
             val rides = reloadSavedRides()
+            reloadFuelEntries()
             val summary = homeSummaryProvider.summarize(
                 seenOffers = offers,
                 savedRides = rides
@@ -380,6 +411,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
 
                 AppTab.RIDES -> RecordsTab(
                     rides = savedRides,
+                    fuelEntries = fuelEntries,
                     isLoading = ridesLoading,
                     error = ridesError,
                     recordsSummaryProvider = recordsSummaryProvider,
@@ -400,18 +432,37 @@ private fun KmOneApp(debugState: RadarDebugState) {
                             refreshAll()
                         }
                     },
-                    onSaveEditedRide = { updatedRide ->
-                        RadarLogger.i(
-                            "KM_V2_SEEN",
-                            "KM_V2_SAVED_RIDE_EDIT_SAVED",
-                            "savedRideId" to updatedRide.id,
-                            "price" to updatedRide.price,
-                            "totalDistanceKm" to updatedRide.totalDistanceKm,
-                            "valuePerKm" to updatedRide.valuePerKm
-                        )
+                    onSaveEditedFuelEntry = { updatedEntry ->
                         coroutineScope.launch {
                             withContext(Dispatchers.IO) {
-                                module.savedRideRepository.updateRide(updatedRide)
+                                module.fuelEntryRepository.updateFuelEntry(updatedEntry)
+                            }
+                            refreshAll()
+                        }
+                    },
+                    onSaveEditedRide = { updatedRide ->
+                        coroutineScope.launch {
+                            withContext(Dispatchers.IO) {
+                                if (savedRides.any { it.id == updatedRide.id }) {
+                                    module.savedRideRepository.updateRide(updatedRide)
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SAVED_RIDE_EDIT_SAVED",
+                                        "savedRideId" to updatedRide.id,
+                                        "price" to updatedRide.price,
+                                        "totalDistanceKm" to updatedRide.totalDistanceKm,
+                                        "valuePerKm" to updatedRide.valuePerKm
+                                    )
+                                } else {
+                                    module.savedRideRepository.saveRide(updatedRide)
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_MANUAL_RIDE_CREATED",
+                                        "savedRideId" to updatedRide.id,
+                                        "price" to updatedRide.price,
+                                        "valuePerKm" to updatedRide.valuePerKm
+                                    )
+                                }
                             }
                             val rides = reloadSavedRides()
                             homeState = homeState.copy(
@@ -446,6 +497,26 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                     savedRides = savedRides
                                 )
                             )
+                        }
+                    },
+                    onDeleteFuelEntry = { fuelEntryId ->
+                        coroutineScope.launch {
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_FUEL_ENTRY_DELETE_REQUESTED",
+                                "fuelEntryId" to fuelEntryId
+                            )
+                            val deleted = withContext(Dispatchers.IO) {
+                                module.fuelEntryRepository.deleteFuelEntry(fuelEntryId)
+                            }
+                            if (deleted) {
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_FUEL_ENTRY_DELETED",
+                                    "fuelEntryId" to fuelEntryId
+                                )
+                            }
+                            refreshAll()
                         }
                     }
                 )
@@ -774,24 +845,41 @@ private fun SeenOffersTab(
 @Composable
 private fun RecordsTab(
     rides: List<SavedRide>,
+    fuelEntries: List<FuelEntry>,
     isLoading: Boolean,
     error: String?,
     recordsSummaryProvider: RecordsSummaryProvider,
     onRefresh: () -> Unit,
     onCreateFuelEntry: (FuelEntry) -> Unit,
+    onSaveEditedFuelEntry: (FuelEntry) -> Unit,
     onSaveEditedRide: (SavedRide) -> Unit,
-    onDeleteRide: (String) -> Unit
+    onDeleteRide: (String) -> Unit,
+    onDeleteFuelEntry: (String) -> Unit
 ) {
     var period by remember { mutableStateOf(RecordsPeriodFilter.DAY) }
-    var expandedSavedRideId by remember(rides, period) { mutableStateOf<String?>(null) }
+    var expandedItemId by remember(rides, fuelEntries, period) { mutableStateOf<String?>(null) }
     var editingRide by remember { mutableStateOf<SavedRide?>(null) }
+    var editingFuelEntry by remember { mutableStateOf<FuelEntry?>(null) }
     var deleteConfirmationRide by remember { mutableStateOf<SavedRide?>(null) }
+    var deleteConfirmationFuelEntry by remember { mutableStateOf<FuelEntry?>(null) }
     var showFuelEntryDialog by remember { mutableStateOf(false) }
+    var showManualRideDialog by remember { mutableStateOf(false) }
     val filteredRides = remember(rides, period) {
         recordsSummaryProvider.filterRides(rides, period)
     }
-    val summary = remember(rides, period) {
-        recordsSummaryProvider.loadSummary(period = period)
+    val filteredFuelEntries = remember(fuelEntries, period) {
+        recordsSummaryProvider.filterFuelEntries(fuelEntries, period)
+    }
+    val recordsItems = remember(filteredRides, filteredFuelEntries) {
+        (filteredRides.map(RecordsListItem::RideItem) + filteredFuelEntries.map(RecordsListItem::FuelItem))
+            .sortedByDescending { it.timestampMs }
+    }
+    val summary = remember(rides, fuelEntries, period) {
+        recordsSummaryProvider.summarize(
+            rides = rides,
+            fuelEntries = fuelEntries,
+            period = period
+        )
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -824,7 +912,7 @@ private fun RecordsTab(
                         selectedPeriod = period,
                         onPeriodSelected = {
                             period = it
-                            expandedSavedRideId = null
+                            expandedItemId = null
                             RadarLogger.i(
                                 "KM_V2_SEEN",
                                 "KM_V2_RECORDS_FILTER_CHANGED",
@@ -848,44 +936,72 @@ private fun RecordsTab(
                         onManualRide = {
                             RadarLogger.i(
                                 "KM_V2_SEEN",
-                                "KM_V2_MANUAL_RIDE_CREATE_REQUESTED"
+                                "KM_V2_MANUAL_RIDE_CREATE_OPENED"
                             )
+                            showManualRideDialog = true
                         }
                     )
                 }
-                if (filteredRides.isEmpty()) {
+                if (recordsItems.isEmpty()) {
                     item {
                         EmptyStateCard(
                             title = "Nenhum registro neste periodo",
-                            message = "As corridas salvas aparecerao aqui."
+                            message = "Corridas e abastecimentos aparecerao aqui."
                         )
                     }
                 } else {
-                    items(filteredRides, key = { it.id }) { ride ->
-                        SavedRideAccordionCard(
-                            ride = ride,
-                            period = period,
-                            expanded = expandedSavedRideId == ride.id,
-                            onToggleExpanded = {
-                                expandedSavedRideId = if (expandedSavedRideId == ride.id) null else ride.id
-                            },
-                            onEdit = {
-                                RadarLogger.i(
-                                    "KM_V2_SEEN",
-                                    "KM_V2_SAVED_RIDE_EDIT_OPENED",
-                                    "savedRideId" to ride.id
-                                )
-                                editingRide = ride
-                            },
-                            onDelete = {
-                                RadarLogger.i(
-                                    "KM_V2_SEEN",
-                                    "KM_V2_SAVED_RIDE_DELETE_CONFIRMATION_OPENED",
-                                    "savedRideId" to ride.id
-                                )
-                                deleteConfirmationRide = ride
-                            }
-                        )
+                    items(recordsItems, key = { it.stableId }) { item ->
+                        when (item) {
+                            is RecordsListItem.RideItem -> SavedRideAccordionCard(
+                                ride = item.ride,
+                                period = period,
+                                expanded = expandedItemId == item.stableId,
+                                onToggleExpanded = {
+                                    expandedItemId = if (expandedItemId == item.stableId) null else item.stableId
+                                },
+                                onEdit = {
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SAVED_RIDE_EDIT_OPENED",
+                                        "savedRideId" to item.ride.id
+                                    )
+                                    editingRide = item.ride
+                                },
+                                onDelete = {
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SAVED_RIDE_DELETE_CONFIRMATION_OPENED",
+                                        "savedRideId" to item.ride.id
+                                    )
+                                    deleteConfirmationRide = item.ride
+                                }
+                            )
+
+                            is RecordsListItem.FuelItem -> FuelEntryAccordionCard(
+                                fuelEntry = item.fuelEntry,
+                                period = period,
+                                expanded = expandedItemId == item.stableId,
+                                onToggleExpanded = {
+                                    expandedItemId = if (expandedItemId == item.stableId) null else item.stableId
+                                },
+                                onEdit = {
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_FUEL_ENTRY_EDIT_OPENED",
+                                        "fuelEntryId" to item.fuelEntry.id
+                                    )
+                                    editingFuelEntry = item.fuelEntry
+                                },
+                                onDelete = {
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_FUEL_ENTRY_DELETE_CONFIRMATION_OPENED",
+                                        "fuelEntryId" to item.fuelEntry.id
+                                    )
+                                    deleteConfirmationFuelEntry = item.fuelEntry
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -908,6 +1024,22 @@ private fun RecordsTab(
         )
     }
 
+    if (showManualRideDialog) {
+        ManualRideDialog(
+            onDismiss = {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_MANUAL_RIDE_CREATE_CANCELLED"
+                )
+                showManualRideDialog = false
+            },
+            onSave = { manualRide ->
+                showManualRideDialog = false
+                onSaveEditedRide(manualRide)
+            }
+        )
+    }
+
     editingRide?.let { ride ->
         SavedRideEditDialog(
             ride = ride,
@@ -921,8 +1053,29 @@ private fun RecordsTab(
             },
             onSave = { updatedRide ->
                 editingRide = null
-                expandedSavedRideId = null
+                expandedItemId = null
                 onSaveEditedRide(updatedRide)
+            }
+        )
+    }
+
+    editingFuelEntry?.let { fuelEntry ->
+        FuelEntryDialog(
+            initialEntry = fuelEntry,
+            onDismiss = {
+                editingFuelEntry = null
+            },
+            onSave = { updatedEntry ->
+                editingFuelEntry = null
+                expandedItemId = null
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_FUEL_ENTRY_EDIT_SAVED",
+                    "fuelEntryId" to updatedEntry.id,
+                    "amountBrl" to updatedEntry.amountBrl,
+                    "liters" to updatedEntry.liters
+                )
+                onSaveEditedFuelEntry(updatedEntry)
             }
         )
     }
@@ -943,7 +1096,7 @@ private fun RecordsTab(
                 Button(
                     onClick = {
                         deleteConfirmationRide = null
-                        expandedSavedRideId = null
+                        expandedItemId = null
                         onDeleteRide(ride.id)
                     },
                     colors = ButtonDefaults.buttonColors(
@@ -963,6 +1116,51 @@ private fun RecordsTab(
                             "savedRideId" to ride.id
                         )
                         deleteConfirmationRide = null
+                    }
+                ) {
+                    Text("Cancelar")
+                }
+            },
+            containerColor = KmOnePalette.Card
+        )
+    }
+
+    deleteConfirmationFuelEntry?.let { fuelEntry ->
+        AlertDialog(
+            onDismissRequest = {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_FUEL_ENTRY_DELETE_CANCELLED",
+                    "fuelEntryId" to fuelEntry.id
+                )
+                deleteConfirmationFuelEntry = null
+            },
+            title = { Text("Excluir este abastecimento?") },
+            text = { Text("Essa acao removera o abastecimento dos seus registros.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        deleteConfirmationFuelEntry = null
+                        expandedItemId = null
+                        onDeleteFuelEntry(fuelEntry.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.Negative,
+                        contentColor = KmOnePalette.TextPrimary
+                    )
+                ) {
+                    Text("Excluir")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        RadarLogger.i(
+                            "KM_V2_SEEN",
+                            "KM_V2_FUEL_ENTRY_DELETE_CANCELLED",
+                            "fuelEntryId" to fuelEntry.id
+                        )
+                        deleteConfirmationFuelEntry = null
                     }
                 ) {
                     Text("Cancelar")
@@ -1001,7 +1199,7 @@ private fun ConfigTab(
                     onValueChange = { dailyGoalText = it },
                     label = { Text("Meta diaria (R$)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 Button(
                     onClick = {
@@ -1930,6 +2128,139 @@ private fun SavedRideAccordionCard(
 }
 
 @Composable
+private fun FuelEntryAccordionCard(
+    fuelEntry: FuelEntry,
+    period: RecordsPeriodFilter,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggleExpanded),
+        shape = RoundedCornerShape(24.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x33FFC857))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            FuelEntryCollapsedContent(
+                fuelEntry = fuelEntry,
+                period = period,
+                expanded = expanded
+            )
+            if (expanded) {
+                FuelEntryExpandedContent(
+                    fuelEntry = fuelEntry,
+                    period = period,
+                    onEdit = onEdit,
+                    onDelete = onDelete
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FuelEntryCollapsedContent(
+    fuelEntry: FuelEntry,
+    period: RecordsPeriodFilter,
+    expanded: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatusChip(
+                text = "Abastecimento",
+                background = Color(0x1AFFFFFF),
+                textColor = KmOnePalette.Attention
+            )
+            Text(
+                text = formatMoney(fuelEntry.amountBrl),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary
+            )
+            val secondary = listOfNotNull(
+                fuelEntry.fuelType,
+                fuelEntry.liters?.let { "${formatDecimal(it)} L" }
+            ).joinToString(" • ")
+            if (secondary.isNotBlank()) {
+                Text(
+                    text = secondary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KmOnePalette.TextSecondary
+                )
+            }
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = formatRecordStamp(fuelEntry.createdAtMs, period),
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+            Text(
+                text = if (expanded) "Ocultar" else "Detalhes",
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.Attention,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun FuelEntryExpandedContent(
+    fuelEntry: FuelEntry,
+    period: RecordsPeriodFilter,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        DividerLine()
+        DetailLine("Tipo", "Abastecimento")
+        DetailLine("Valor", formatMoney(fuelEntry.amountBrl))
+        DetailLine("Combustivel", fuelEntry.fuelType ?: "-")
+        DetailLine("Litros", fuelEntry.liters?.let { "${formatDecimal(it)} L" } ?: "-")
+        DetailLine("Observacao", fuelEntry.note ?: "-")
+        DetailLine("Quando", formatRecordStamp(fuelEntry.createdAtMs, period, includeDateForDay = true))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onEdit,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.ElectricBlue),
+                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.ElectricBlue)
+            ) {
+                Text("Editar")
+            }
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.Negative),
+                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Negative)
+            ) {
+                Text("Excluir")
+            }
+        }
+    }
+}
+
+@Composable
 private fun SavedRideCollapsedContent(
     ride: SavedRide,
     period: RecordsPeriodFilter,
@@ -2077,61 +2408,61 @@ private fun SavedRideEditDialog(
                     onValueChange = { priceText = it },
                     label = { Text("Preco") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = productText,
                     onValueChange = { productText = it },
                     label = { Text("Produto") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = originText,
                     onValueChange = { originText = it },
                     label = { Text("Origem") },
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = destinationText,
                     onValueChange = { destinationText = it },
                     label = { Text("Destino") },
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = pickupDistanceText,
                     onValueChange = { pickupDistanceText = it },
                     label = { Text("Distancia de busca (km)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = pickupTimeText,
                     onValueChange = { pickupTimeText = it },
                     label = { Text("Tempo de busca (min)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = tripDistanceText,
                     onValueChange = { tripDistanceText = it },
                     label = { Text("Distancia da viagem (km)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = tripTimeText,
                     onValueChange = { tripTimeText = it },
                     label = { Text("Tempo da viagem (min)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = totalDistanceText,
                     onValueChange = { totalDistanceText = it },
                     label = { Text("Distancia total (km)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 DetailLine(
                     "R$/km calculado",
@@ -2169,13 +2500,14 @@ private fun SavedRideEditDialog(
 
 @Composable
 private fun FuelEntryDialog(
+    initialEntry: FuelEntry? = null,
     onDismiss: () -> Unit,
     onSave: (FuelEntry) -> Unit
 ) {
-    var amountText by remember { mutableStateOf("") }
-    var litersText by remember { mutableStateOf("") }
-    var fuelTypeText by remember { mutableStateOf("") }
-    var noteText by remember { mutableStateOf("") }
+    var amountText by remember(initialEntry?.id) { mutableStateOf(initialEntry?.amountBrl?.let(::formatNumberInput) ?: "") }
+    var litersText by remember(initialEntry?.id) { mutableStateOf(initialEntry?.liters?.let(::formatDecimal) ?: "") }
+    var fuelTypeText by remember(initialEntry?.id) { mutableStateOf(initialEntry?.fuelType.orEmpty()) }
+    var noteText by remember(initialEntry?.id) { mutableStateOf(initialEntry?.note.orEmpty()) }
     val valid = isValidPositiveOrBlank(amountText) && amountText.isNotBlank() && isValidPositiveOrBlank(litersText)
 
     AlertDialog(
@@ -2191,27 +2523,27 @@ private fun FuelEntryDialog(
                     onValueChange = { amountText = it },
                     label = { Text("Valor abastecido (R$)") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = litersText,
                     onValueChange = { litersText = it },
                     label = { Text("Litros") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = fuelTypeText,
                     onValueChange = { fuelTypeText = it },
                     label = { Text("Tipo de combustivel") },
                     singleLine = true,
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
                 OutlinedTextField(
                     value = noteText,
                     onValueChange = { noteText = it },
                     label = { Text("Observacao") },
-                    colors = lightInputColors()
+                    colors = darkInputColors()
                 )
             }
         },
@@ -2220,16 +2552,165 @@ private fun FuelEntryDialog(
                 onClick = {
                     onSave(
                         FuelEntry(
-                            id = java.util.UUID.randomUUID().toString(),
+                            id = initialEntry?.id ?: java.util.UUID.randomUUID().toString(),
                             amountBrl = parsePositiveOrNull(amountText) ?: 0.0,
                             liters = parsePositiveOrNull(litersText),
                             fuelType = normalizeOptionalText(fuelTypeText),
-                            createdAtMs = System.currentTimeMillis(),
+                            createdAtMs = initialEntry?.createdAtMs ?: System.currentTimeMillis(),
                             note = normalizeOptionalText(noteText)
                         )
                     )
                 },
                 enabled = valid,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = KmOnePalette.NeonSoft,
+                    contentColor = KmOnePalette.BackgroundDeep
+                )
+            ) {
+                Text("Salvar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        },
+        containerColor = KmOnePalette.Card
+    )
+}
+
+@Composable
+private fun ManualRideDialog(
+    onDismiss: () -> Unit,
+    onSave: (SavedRide) -> Unit
+) {
+    var platformText by remember { mutableStateOf("Uber") }
+    var productText by remember { mutableStateOf("") }
+    var priceText by remember { mutableStateOf("") }
+    var originText by remember { mutableStateOf("") }
+    var destinationText by remember { mutableStateOf("") }
+    var pickupDistanceText by remember { mutableStateOf("") }
+    var pickupTimeText by remember { mutableStateOf("") }
+    var tripDistanceText by remember { mutableStateOf("") }
+    var tripTimeText by remember { mutableStateOf("") }
+    var totalDistanceText by remember { mutableStateOf("") }
+    val validInputs = listOf(
+        isValidPositiveOrBlank(priceText) && priceText.isNotBlank(),
+        isValidNonNegativeOrBlank(pickupDistanceText),
+        isValidNonNegativeOrBlank(pickupTimeText),
+        isValidNonNegativeOrBlank(tripDistanceText),
+        isValidNonNegativeOrBlank(tripTimeText),
+        isValidNonNegativeOrBlank(totalDistanceText)
+    ).all { it }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Corrida manual") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = platformText,
+                    onValueChange = { platformText = it },
+                    label = { Text("Plataforma") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = productText,
+                    onValueChange = { productText = it },
+                    label = { Text("Produto/categoria") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = it },
+                    label = { Text("Preco") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = originText,
+                    onValueChange = { originText = it },
+                    label = { Text("Origem") },
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = destinationText,
+                    onValueChange = { destinationText = it },
+                    label = { Text("Destino") },
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = pickupDistanceText,
+                    onValueChange = { pickupDistanceText = it },
+                    label = { Text("Distancia de busca (km)") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = pickupTimeText,
+                    onValueChange = { pickupTimeText = it },
+                    label = { Text("Tempo de busca (min)") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = tripDistanceText,
+                    onValueChange = { tripDistanceText = it },
+                    label = { Text("Distancia da viagem (km)") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = tripTimeText,
+                    onValueChange = { tripTimeText = it },
+                    label = { Text("Tempo da viagem (min)") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = totalDistanceText,
+                    onValueChange = { totalDistanceText = it },
+                    label = { Text("Distancia total (km)") },
+                    singleLine = true,
+                    colors = darkInputColors()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val nowMs = System.currentTimeMillis()
+                    val ride = SavedRide(
+                        id = java.util.UUID.randomUUID().toString(),
+                        sourceSeenOfferId = null,
+                        platform = parseManualRidePlatform(platformText),
+                        price = parsePositiveOrNull(priceText),
+                        valuePerKm = null,
+                        pickupDistanceKm = parseNonNegativeOrNull(pickupDistanceText),
+                        pickupTimeMin = parseNonNegativeOrNull(pickupTimeText),
+                        tripDistanceKm = parseNonNegativeOrNull(tripDistanceText),
+                        tripTimeMin = parseNonNegativeOrNull(tripTimeText),
+                        totalDistanceKm = parseNonNegativeOrNull(totalDistanceText),
+                        estimatedTotalTimeMin = listOfNotNull(
+                            parseNonNegativeOrNull(pickupTimeText),
+                            parseNonNegativeOrNull(tripTimeText)
+                        ).takeIf { it.isNotEmpty() }?.sum(),
+                        productName = normalizeOptionalText(productText),
+                        originPreview = normalizeOptionalText(originText),
+                        destinationPreview = normalizeOptionalText(destinationText),
+                        acceptedAtMs = nowMs,
+                        createdAtMs = nowMs,
+                        updatedAtMs = nowMs,
+                        source = SavedRideSource.MANUAL_ENTRY
+                    )
+                    onSave(ride.copy(valuePerKm = recalculateValuePerKm(ride)))
+                },
+                enabled = validInputs,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = KmOnePalette.NeonSoft,
                     contentColor = KmOnePalette.BackgroundDeep
@@ -2526,17 +3007,18 @@ private fun savedRideSourceLabel(source: SavedRideSource): String {
 }
 
 @Composable
-private fun lightInputColors() = OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = Color.White,
-    unfocusedContainerColor = Color.White,
-    disabledContainerColor = Color.White,
-    focusedTextColor = Color(0xFF111111),
-    unfocusedTextColor = Color(0xFF111111),
-    cursorColor = Color(0xFF111111),
-    focusedLabelColor = Color(0xFF333333),
-    unfocusedLabelColor = Color(0xFF444444),
-    focusedBorderColor = KmOnePalette.ElectricBlue,
-    unfocusedBorderColor = Color(0xFFB9C4D0)
+private fun darkInputColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = KmOnePalette.CardAlt,
+    unfocusedContainerColor = KmOnePalette.CardAlt,
+    disabledContainerColor = KmOnePalette.CardAlt,
+    focusedTextColor = KmOnePalette.TextPrimary,
+    unfocusedTextColor = KmOnePalette.TextPrimary,
+    disabledTextColor = KmOnePalette.TextSecondary,
+    cursorColor = KmOnePalette.Neon,
+    focusedLabelColor = KmOnePalette.TextSecondary,
+    unfocusedLabelColor = KmOnePalette.TextSecondary,
+    focusedBorderColor = KmOnePalette.Neon,
+    unfocusedBorderColor = KmOnePalette.ElectricBlue.copy(alpha = 0.5f)
 )
 
 private fun isValidPositiveOrBlank(value: String): Boolean {
@@ -2569,6 +3051,10 @@ private fun formatNumberInput(value: Double): String {
     return String.format(Locale.US, "%.2f", value).replace(".", ",")
 }
 
+private fun formatDecimal(value: Double): String {
+    return String.format(Locale.US, "%.1f", value).replace(".", ",")
+}
+
 private fun recalculateValuePerKm(ride: SavedRide): Double? {
     val totalKm = ride.totalDistanceKm
         ?: when {
@@ -2580,6 +3066,14 @@ private fun recalculateValuePerKm(ride: SavedRide): Double? {
         ride.price / totalKm
     } else {
         null
+    }
+}
+
+private fun parseManualRidePlatform(value: String): RidePlatform {
+    return when (value.trim().lowercase(Locale.ROOT)) {
+        "uber" -> RidePlatform.UBER
+        "99" -> RidePlatform.NINETY_NINE
+        else -> RidePlatform.UNKNOWN
     }
 }
 

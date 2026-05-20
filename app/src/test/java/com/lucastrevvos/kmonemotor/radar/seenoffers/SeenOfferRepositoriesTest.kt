@@ -137,6 +137,47 @@ class SeenOfferRepositoriesTest {
     }
 
     @Test
+    fun fuelEntryRepository_updatesWithoutDuplicating() {
+        val repo = fuelEntryRepository()
+        val original = FuelEntry(
+            id = "fuel-1",
+            amountBrl = 100.0,
+            liters = 20.0,
+            fuelType = "Gasolina",
+            createdAtMs = 1_000L,
+            note = "posto"
+        )
+        repo.saveFuelEntry(original)
+
+        val updated = repo.updateFuelEntry(original.copy(amountBrl = 120.0, note = "ajustado"))
+
+        assertNotNull(updated)
+        assertEquals(1, repo.listFuelEntries().size)
+        assertEquals(120.0, repo.listFuelEntries().first().amountBrl, 0.0)
+        assertEquals("ajustado", repo.listFuelEntries().first().note)
+    }
+
+    @Test
+    fun fuelEntryRepository_deletesEntry() {
+        val repo = fuelEntryRepository()
+        repo.saveFuelEntry(
+            FuelEntry(
+                id = "fuel-1",
+                amountBrl = 100.0,
+                liters = 20.0,
+                fuelType = "Gasolina",
+                createdAtMs = 1_000L,
+                note = null
+            )
+        )
+
+        val deleted = repo.deleteFuelEntry("fuel-1")
+
+        assertTrue(deleted)
+        assertTrue(repo.listFuelEntries().isEmpty())
+    }
+
+    @Test
     fun driverSettingsRepository_persistsDailyGoal() {
         val repo = driverSettingsRepository()
 

@@ -107,6 +107,28 @@ class RecordsSummaryProviderTest {
     }
 
     @Test
+    fun manualRide_isCountedLikeNormalRide() {
+        val nowMs = millis(2024, 5, 15, 12, 0)
+        val summary = provider.summarize(
+            rides = listOf(
+                ride(
+                    id = "manual-1",
+                    acceptedAtMs = nowMs,
+                    price = 30.0,
+                    totalDistanceKm = 10.0,
+                    source = SavedRideSource.MANUAL_ENTRY
+                )
+            ),
+            period = RecordsPeriodFilter.DAY,
+            nowMs = nowMs
+        )
+
+        assertEquals(30.0, summary.totalEarned, 0.0)
+        assertEquals(1, summary.ridesCount)
+        assertEquals(10.0, summary.totalKm ?: 0.0, 0.0)
+    }
+
+    @Test
     fun weekAndMonth_filtersAffectFuelToo() {
         val nowMs = millis(2024, 5, 15, 12, 0)
         val fuelEntries = listOf(
@@ -136,7 +158,8 @@ class RecordsSummaryProviderTest {
         id: String,
         acceptedAtMs: Long,
         price: Double? = 10.0,
-        totalDistanceKm: Double? = 4.0
+        totalDistanceKm: Double? = 4.0,
+        source: SavedRideSource = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
     ) = SavedRide(
         id = id,
         sourceSeenOfferId = null,
@@ -155,7 +178,7 @@ class RecordsSummaryProviderTest {
         acceptedAtMs = acceptedAtMs,
         createdAtMs = acceptedAtMs,
         updatedAtMs = acceptedAtMs,
-        source = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
+        source = source
     )
 
     private fun fuel(
