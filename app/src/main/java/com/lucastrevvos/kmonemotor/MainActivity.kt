@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -67,10 +68,18 @@ import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugStore
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
+import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeDailySummary
+import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeDailySummaryProvider
+import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeGoalSource
+import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsPeriodFilter
+import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummary
+import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummaryProvider
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRide
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRideSource
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferRuntime
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferSanitizationRules
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffersUiState
 import com.lucastrevvos.kmonemotor.ui.theme.KMONEMotorTheme
@@ -107,11 +116,7 @@ private enum class AppTab(
 private enum class SeenFilter(
     val label: String
 ) {
-    ALL("Todas"),
-    SEEN("Vistas"),
-    ACCEPTED("Aceitas"),
-    REJECTED("Recusadas"),
-    IGNORED("Ignoradas")
+    ALL("Todas")
 }
 
 private object KmOnePalette {
@@ -131,22 +136,39 @@ private object KmOnePalette {
     val Neutral = Color(0xFF7D93A8)
 }
 
+private data class HomeUiState(
+    val summary: HomeDailySummary = emptyHomeSummary(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null
+)
+
 @Composable
 private fun KmOneApp(debugState: RadarDebugState) {
     val context = LocalContext.current
     val module = remember { SeenOfferRuntime.get(context) }
+    val homeSummaryProvider = remember {
+        HomeDailySummaryProvider(
+            seenOfferRepository = module.seenOfferRepository,
+            savedRideRepository = module.savedRideRepository
+        )
+    }
+    val recordsSummaryProvider = remember {
+        RecordsSummaryProvider(
+            savedRideRepository = module.savedRideRepository
+        )
+    }
     val overlayController = remember { PiuOverlayRuntime.get(context) }
     val coroutineScope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf(AppTab.HOME) }
-    var selectedFilter by remember { mutableStateOf(SeenFilter.ALL) }
     var seenState by remember { mutableStateOf(SeenOffersUiState(isLoading = true)) }
     var savedRides by remember { mutableStateOf<List<SavedRide>>(emptyList()) }
     var ridesLoading by remember { mutableStateOf(true) }
     var ridesError by remember { mutableStateOf<String?>(null) }
+    var homeState by remember { mutableStateOf(HomeUiState(isLoading = true)) }
 
-    suspend fun reloadSeenOffers() {
+    suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
-        runCatching {
+        return runCatching {
             withContext(Dispatchers.IO) {
                 module.seenOfferRepository.listSeenOffers(limit = 200)
             }
@@ -154,13 +176,15 @@ private fun KmOneApp(debugState: RadarDebugState) {
             seenState = SeenOffersUiState(offers = offers, isLoading = false, errorMessage = null)
         }.onFailure { error ->
             seenState = SeenOffersUiState(isLoading = false, errorMessage = error.message ?: "Falha ao carregar ofertas")
+        }.getOrElse {
+            emptyList()
         }
     }
 
-    suspend fun reloadSavedRides() {
+    suspend fun reloadSavedRides(): List<SavedRide> {
         ridesLoading = true
         ridesError = null
-        runCatching {
+        return runCatching {
             withContext(Dispatchers.IO) {
                 module.savedRideRepository.listSavedRides(limit = 100)
             }
@@ -171,13 +195,25 @@ private fun KmOneApp(debugState: RadarDebugState) {
             savedRides = emptyList()
             ridesLoading = false
             ridesError = error.message ?: "Falha ao carregar registros"
+        }.getOrElse {
+            emptyList()
         }
     }
 
     fun refreshAll() {
         coroutineScope.launch {
-            reloadSeenOffers()
-            reloadSavedRides()
+            homeState = homeState.copy(isLoading = true, errorMessage = null)
+            val offers = reloadSeenOffers()
+            val rides = reloadSavedRides()
+            val summary = homeSummaryProvider.summarize(
+                seenOffers = offers,
+                savedRides = rides
+            )
+            homeState = HomeUiState(
+                summary = summary,
+                isLoading = false,
+                errorMessage = seenState.errorMessage ?: ridesError
+            )
         }
     }
 
@@ -189,6 +225,12 @@ private fun KmOneApp(debugState: RadarDebugState) {
             x = debugState.piuLastX
         )
         refreshAll()
+    }
+
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == AppTab.HOME) {
+            refreshAll()
+        }
     }
 
     Scaffold(
@@ -212,8 +254,9 @@ private fun KmOneApp(debugState: RadarDebugState) {
                 .padding(innerPadding)
         ) {
             when (selectedTab) {
-                AppTab.HOME -> HomeTab(
+                AppTab.HOME -> HomeDashboardFinalTab(
                     debugState = debugState,
+                    homeState = homeState,
                     onOpenAccessibility = {
                         context.startActivity(
                             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -260,38 +303,59 @@ private fun KmOneApp(debugState: RadarDebugState) {
                             )
                         }
                     },
-                    seenCount = seenState.offers.size,
-                    acceptedCount = seenState.offers.count { it.status == SeenOfferStatus.ACCEPTED_MANUALLY },
-                    ridesCount = savedRides.size
+                    onConfigureGoal = { selectedTab = AppTab.CONFIG }
                 )
 
                 AppTab.SEEN -> SeenOffersTab(
                     state = seenState,
-                    selectedFilter = selectedFilter,
-                    onFilterSelected = { selectedFilter = it },
                     onRefresh = { refreshAll() },
-                    onAccept = { offerId ->
+                    onSave = { offerId ->
                         coroutineScope.launch {
                             withContext(Dispatchers.IO) {
-                                module.manualActions.acceptSeenOfferManually(offerId)
+                                val savedRide = module.manualActions.acceptSeenOfferManually(offerId)
+                                if (savedRide != null) {
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SEEN_OFFER_SAVED_MANUALLY_FROM_VIEWS",
+                                        "seenOfferId" to offerId,
+                                        "savedRideId" to savedRide.id
+                                    )
+                                }
                             }
                             reloadSeenOffers()
                             reloadSavedRides()
-                        }
-                    },
-                    onReject = { offerId ->
-                        coroutineScope.launch {
-                            withContext(Dispatchers.IO) {
-                                module.manualActions.rejectSeenOfferManually(offerId)
-                            }
-                            reloadSeenOffers()
                         }
                     },
                     onIgnore = { offerId ->
                         coroutineScope.launch {
                             withContext(Dispatchers.IO) {
                                 module.manualActions.ignoreSeenOffer(offerId)
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_SEEN_OFFER_IGNORED_FROM_VIEWS",
+                                    "seenOfferId" to offerId
+                                )
                             }
+                            reloadSeenOffers()
+                        }
+                    },
+                    onClearPending = { pendingOfferIds ->
+                        coroutineScope.launch {
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_SEEN_OFFERS_CLEAR_PENDING_REQUESTED",
+                                "count" to pendingOfferIds.size
+                            )
+                            withContext(Dispatchers.IO) {
+                                pendingOfferIds.forEach { offerId ->
+                                    module.manualActions.ignoreSeenOffer(offerId)
+                                }
+                            }
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_SEEN_OFFERS_CLEAR_PENDING_DONE",
+                                "count" to pendingOfferIds.size
+                            )
                             reloadSeenOffers()
                         }
                     }
@@ -301,7 +365,41 @@ private fun KmOneApp(debugState: RadarDebugState) {
                     rides = savedRides,
                     isLoading = ridesLoading,
                     error = ridesError,
-                    onRefresh = { refreshAll() }
+                    recordsSummaryProvider = recordsSummaryProvider,
+                    onRefresh = { refreshAll() },
+                    onEditRide = { savedRideId ->
+                        RadarLogger.i(
+                            "KM_V2_SEEN",
+                            "KM_V2_SAVED_RIDE_EDIT_REQUESTED",
+                            "savedRideId" to savedRideId
+                        )
+                    },
+                    onDeleteRide = { savedRideId ->
+                        coroutineScope.launch {
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_SAVED_RIDE_DELETE_REQUESTED",
+                                "savedRideId" to savedRideId
+                            )
+                            val deleted = withContext(Dispatchers.IO) {
+                                module.savedRideRepository.deleteRide(savedRideId)
+                            }
+                            if (deleted) {
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_SAVED_RIDE_DELETED",
+                                    "savedRideId" to savedRideId
+                                )
+                            }
+                            reloadSavedRides()
+                            homeState = homeState.copy(
+                                summary = homeSummaryProvider.summarize(
+                                    seenOffers = seenState.offers,
+                                    savedRides = savedRides
+                                )
+                            )
+                        }
+                    }
                 )
 
                 AppTab.CONFIG -> ConfigTab(debugState = debugState)
@@ -313,14 +411,13 @@ private fun KmOneApp(debugState: RadarDebugState) {
 @Composable
 private fun HomeTab(
     debugState: RadarDebugState,
+    homeState: HomeUiState,
     onOpenAccessibility: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
     onShowPiu: () -> Unit,
     onHidePiu: () -> Unit,
     onManualAnalyze: () -> Unit,
-    seenCount: Int,
-    acceptedCount: Int,
-    ridesCount: Int
+    onConfigureGoal: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -328,36 +425,61 @@ private fun HomeTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            HeroPanel(
-                title = "KM One",
-                subtitle = "Monitoramento visual e revisao das ultimas ofertas vistas.",
-                statusLabel = if (debugState.serviceActive) "KM One ativo" else "Ativacao pendente"
+            DailyGoalCard(
+                summary = homeState.summary,
+                isLoading = homeState.isLoading,
+                errorMessage = homeState.errorMessage,
+                onConfigureGoal = onConfigureGoal
             )
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MetricPanel(
                     modifier = Modifier.weight(1f),
-                    label = "Ofertas vistas",
-                    value = seenCount.toString(),
-                    accent = KmOnePalette.Neon
-                )
-                MetricPanel(
-                    modifier = Modifier.weight(1f),
-                    label = "Aceitas",
-                    value = acceptedCount.toString(),
+                    label = "Corridas",
+                    value = homeState.summary.acceptedRidesCount.toString(),
                     accent = KmOnePalette.Positive
                 )
                 MetricPanel(
                     modifier = Modifier.weight(1f),
-                    label = "Registros",
-                    value = ridesCount.toString(),
-                    accent = KmOnePalette.ElectricBlue
+                    label = "Km rodados",
+                    value = homeState.summary.totalKmToday?.let(::formatKmCompact) ?: "—",
+                    accent = KmOnePalette.Neon
                 )
             }
         }
         item {
-            CockpitCard(title = "Painel rapido") {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Km rodados",
+                    value = homeState.summary.totalKmToday?.let(::formatKmCompact) ?: "—",
+                    accent = KmOnePalette.Neon
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Media",
+                    value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "—",
+                    accent = KmOnePalette.Attention
+                )
+            }
+        }
+        if (homeState.summary.bestRideValuePerKm != null || homeState.summary.bestRidePrice != null) {
+            item {
+                BestRideCard(summary = homeState.summary)
+            }
+        }
+        item {
+            CockpitCard(title = "Status operacional", accent = KmOnePalette.Line) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DetailLine("KM One", if (debugState.serviceActive) "Ativo" else "Inativo")
+                    DetailLine("Overlay", if (debugState.piuOverlayShowing) "Visivel" else "Oculto")
+                    DetailLine("Permissao", if (debugState.piuOverlayPermissionGranted) "OK" else "Pendente")
+                }
+            }
+        }
+        item {
+            CockpitCard(title = "Atalhos", accent = Color(0x4438FF97)) {
                 ActionGrid(
                     actions = listOf(
                         QuickAction("Acessibilidade", onOpenAccessibility),
@@ -369,15 +491,138 @@ private fun HomeTab(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun HomeDashboardTab(
+    debugState: RadarDebugState,
+    homeState: HomeUiState,
+    onOpenAccessibility: () -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    onShowPiu: () -> Unit,
+    onHidePiu: () -> Unit,
+    onManualAnalyze: () -> Unit,
+    onConfigureGoal: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
         item {
-            CockpitCard(title = "Status operacional") {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DetailLine("Servico", if (debugState.serviceActive) "Ativo" else "Inativo")
-                    DetailLine("Overlay", if (debugState.piuOverlayShowing) "Visivel" else "Oculto")
-                    DetailLine("Permissao", if (debugState.piuOverlayPermissionGranted) "Concedida" else "Pendente")
-                    DetailLine("Uber", debugState.uberOperationalState.name.replace('_', ' '))
-                    DetailLine("99", debugState.ninetyNineOperationalState.name.replace('_', ' '))
-                }
+            DailyGoalCard(
+                summary = homeState.summary,
+                isLoading = homeState.isLoading,
+                errorMessage = homeState.errorMessage,
+                onConfigureGoal = onConfigureGoal
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Corridas",
+                    value = homeState.summary.acceptedRidesCount.toString(),
+                    accent = KmOnePalette.Positive
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Km rodados",
+                    value = homeState.summary.totalKmToday?.let(::formatKmCompact) ?: "—",
+                    accent = KmOnePalette.Neon
+                )
+            }
+        }
+        item {
+            MetricPanel(
+                label = "Media",
+                value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "—",
+                accent = KmOnePalette.Attention
+            )
+        }
+        item {
+            CockpitCard(title = "Atalhos", accent = Color(0x4438FF97)) {
+                ActionGrid(
+                    actions = listOf(
+                        QuickAction("Acessibilidade", onOpenAccessibility),
+                        QuickAction("Permissao overlay", onRequestOverlayPermission),
+                        QuickAction("Mostrar painel", onShowPiu),
+                        QuickAction("Ocultar painel", onHidePiu)
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeDashboardFinalTab(
+    debugState: RadarDebugState,
+    homeState: HomeUiState,
+    onOpenAccessibility: () -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    onShowPiu: () -> Unit,
+    onHidePiu: () -> Unit,
+    onManualAnalyze: () -> Unit,
+    onConfigureGoal: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            DailyGoalCard(
+                summary = homeState.summary,
+                isLoading = homeState.isLoading,
+                errorMessage = homeState.errorMessage,
+                onConfigureGoal = onConfigureGoal
+            )
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Corridas",
+                    value = homeState.summary.acceptedRidesCount.toString(),
+                    accent = KmOnePalette.Positive
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Km rodados",
+                    value = homeState.summary.totalKmToday?.let(::formatKmCompact) ?: "--",
+                    accent = KmOnePalette.Neon
+                )
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Media",
+                    value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
+                    accent = KmOnePalette.Attention,
+                    valueStyle = MaterialTheme.typography.titleLarge
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Abastecido",
+                    value = "--",
+                    accent = KmOnePalette.ElectricBlue
+                )
+            }
+        }
+        item {
+            CockpitCard(title = "Atalhos", accent = Color(0x4438FF97)) {
+                ActionGrid(
+                    actions = listOf(
+                        QuickAction("Acessibilidade", onOpenAccessibility),
+                        QuickAction("Permissao overlay", onRequestOverlayPermission),
+                        QuickAction("Mostrar painel", onShowPiu),
+                        QuickAction("Ocultar painel", onHidePiu)
+                    )
+                )
             }
         }
     }
@@ -386,33 +631,23 @@ private fun HomeTab(
 @Composable
 private fun SeenOffersTab(
     state: SeenOffersUiState,
-    selectedFilter: SeenFilter,
-    onFilterSelected: (SeenFilter) -> Unit,
     onRefresh: () -> Unit,
-    onAccept: (String) -> Unit,
-    onReject: (String) -> Unit,
-    onIgnore: (String) -> Unit
+    onSave: (String) -> Unit,
+    onIgnore: (String) -> Unit,
+    onClearPending: (List<String>) -> Unit
 ) {
-    val filteredOffers = remember(state.offers, selectedFilter) {
+    val filteredOffers = remember(state.offers) {
         state.offers.filter { offer ->
-            when (selectedFilter) {
-                SeenFilter.ALL -> true
-                SeenFilter.SEEN -> offer.status == SeenOfferStatus.SEEN
-                SeenFilter.ACCEPTED -> offer.status == SeenOfferStatus.ACCEPTED_MANUALLY
-                SeenFilter.REJECTED -> offer.status == SeenOfferStatus.REJECTED_MANUALLY
-                SeenFilter.IGNORED -> offer.status == SeenOfferStatus.IGNORED
-            }
+            offer.status == SeenOfferStatus.SEEN &&
+                !SeenOfferSanitizationRules.isSuspiciousForPendingQueue(offer)
         }
     }
+    var expandedSeenOfferId by remember(filteredOffers) { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         HeaderSection(
             title = "Ofertas vistas",
-            subtitle = "Revise as ultimas ofertas detectadas pelo KM One."
-        )
-        FilterRow(
-            selectedFilter = selectedFilter,
-            onFilterSelected = onFilterSelected
+            subtitle = "Decida o que fazer com as ofertas pendentes."
         )
         when {
             state.isLoading -> Box(
@@ -430,8 +665,8 @@ private fun SeenOffersTab(
             )
 
             filteredOffers.isEmpty() -> EmptyState(
-                title = "Nenhuma oferta vista ainda",
-                message = "Assim que o KM One detectar ofertas, elas aparecerao aqui.",
+                title = "Nenhuma oferta pendente",
+                message = "As proximas ofertas detectadas pelo KM One aparecerao aqui.",
                 actionLabel = "Atualizar",
                 onAction = onRefresh
             )
@@ -441,12 +676,30 @@ private fun SeenOffersTab(
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                item {
+                    SeenOffersHeaderActions(
+                        pendingCount = filteredOffers.size,
+                        onClearPending = {
+                            expandedSeenOfferId = null
+                            onClearPending(filteredOffers.map { it.id })
+                        }
+                    )
+                }
                 items(filteredOffers, key = { it.id }) { offer ->
                     SeenOfferCard(
                         offer = offer,
-                        onAccept = { onAccept(offer.id) },
-                        onReject = { onReject(offer.id) },
-                        onIgnore = { onIgnore(offer.id) }
+                        expanded = expandedSeenOfferId == offer.id,
+                        onToggleExpanded = {
+                            expandedSeenOfferId = if (expandedSeenOfferId == offer.id) null else offer.id
+                        },
+                        onSave = {
+                            expandedSeenOfferId = null
+                            onSave(offer.id)
+                        },
+                        onIgnore = {
+                            expandedSeenOfferId = null
+                            onIgnore(offer.id)
+                        }
                     )
                 }
             }
@@ -459,12 +712,24 @@ private fun RecordsTab(
     rides: List<SavedRide>,
     isLoading: Boolean,
     error: String?,
-    onRefresh: () -> Unit
+    recordsSummaryProvider: RecordsSummaryProvider,
+    onRefresh: () -> Unit,
+    onEditRide: (String) -> Unit,
+    onDeleteRide: (String) -> Unit
 ) {
+    var period by remember { mutableStateOf(RecordsPeriodFilter.DAY) }
+    var expandedSavedRideId by remember(rides, period) { mutableStateOf<String?>(null) }
+    val filteredRides = remember(rides, period) {
+        recordsSummaryProvider.filterRides(rides, period)
+    }
+    val summary = remember(rides, period) {
+        recordsSummaryProvider.summarize(rides, period)
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         HeaderSection(
             title = "Registros",
-            subtitle = "Corridas confirmadas manualmente a partir das ofertas vistas."
+            subtitle = "Resumo financeiro e operacional das corridas salvas."
         )
         when {
             isLoading -> Box(
@@ -481,20 +746,51 @@ private fun RecordsTab(
                 onAction = onRefresh
             )
 
-            rides.isEmpty() -> EmptyState(
-                title = "Nenhum registro ainda",
-                message = "Quando voce marcar uma oferta como aceita, ela aparecera aqui.",
-                actionLabel = "Atualizar",
-                onAction = onRefresh
-            )
-
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                items(rides, key = { it.id }) { ride ->
-                    SavedRideCard(ride = ride)
+                item {
+                    RecordsPeriodFilterTabs(
+                        selectedPeriod = period,
+                        onPeriodSelected = {
+                            period = it
+                            expandedSavedRideId = null
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_RECORDS_FILTER_CHANGED",
+                                "period" to it.name
+                            )
+                        }
+                    )
+                }
+                item {
+                    RecordsSummaryCard(summary = summary)
+                }
+                if (filteredRides.isEmpty()) {
+                    item {
+                        EmptyStateCard(
+                            title = "Nenhum registro neste periodo",
+                            message = "As corridas salvas aparecerao aqui."
+                        )
+                    }
+                } else {
+                    items(filteredRides, key = { it.id }) { ride ->
+                        SavedRideAccordionCard(
+                            ride = ride,
+                            period = period,
+                            expanded = expandedSavedRideId == ride.id,
+                            onToggleExpanded = {
+                                expandedSavedRideId = if (expandedSavedRideId == ride.id) null else ride.id
+                            },
+                            onEdit = { onEditRide(ride.id) },
+                            onDelete = {
+                                expandedSavedRideId = null
+                                onDeleteRide(ride.id)
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -573,7 +869,8 @@ private fun MetricPanel(
     modifier: Modifier = Modifier,
     label: String,
     value: String,
-    accent: Color
+    accent: Color,
+    valueStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.headlineSmall
 ) {
     Surface(
         modifier = modifier,
@@ -593,9 +890,12 @@ private fun MetricPanel(
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.headlineSmall,
+                style = valueStyle,
                 fontWeight = FontWeight.Bold,
-                color = KmOnePalette.TextPrimary
+                color = KmOnePalette.TextPrimary,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = label,
@@ -642,16 +942,25 @@ private fun ActionGrid(actions: List<QuickAction>) {
         actions.chunked(2).forEach { rowActions ->
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 rowActions.forEach { action ->
-                    Button(
+                    OutlinedButton(
                         onClick = action.onClick,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(16.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = KmOnePalette.CardAlt,
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = KmOnePalette.TextPrimary
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            KmOnePalette.Line
                         )
                     ) {
-                        Text(action.label)
+                        Text(
+                            text = action.label,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 if (rowActions.size == 1) {
@@ -727,12 +1036,191 @@ private fun FilterRow(
 @Composable
 private fun SeenOfferCard(
     offer: SeenOffer,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onSave: () -> Unit,
+    onIgnore: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggleExpanded),
+        shape = RoundedCornerShape(24.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x3327C87B))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SeenOfferCollapsedContent(
+                offer = offer,
+                expanded = expanded
+            )
+            if (expanded) {
+                SeenOfferExpandedContent(
+                    offer = offer,
+                    onSave = onSave,
+                    onIgnore = onIgnore
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeenOffersHeaderActions(
+    pendingCount: Int,
+    onClearPending: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Toque em uma oferta para ver detalhes",
+            style = MaterialTheme.typography.bodyMedium,
+            color = KmOnePalette.TextSecondary
+        )
+        TextButton(
+            onClick = onClearPending,
+            enabled = pendingCount > 0
+        ) {
+            Text(
+                text = "Apagar todas",
+                color = if (pendingCount > 0) KmOnePalette.Attention else KmOnePalette.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun SeenOfferCollapsedContent(
+    offer: SeenOffer,
+    expanded: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusChip(
+                    text = platformLabel(offer.platform),
+                    background = Color(0x1F5AA8FF),
+                    textColor = KmOnePalette.ElectricBlue
+                )
+                offer.valuePerKm?.let {
+                    StatusChip(
+                        text = formatPerKm(it),
+                        background = Color(0x1AFFFFFF),
+                        textColor = KmOnePalette.Neon
+                    )
+                }
+            }
+            Text(
+                text = formatMoney(offer.price),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary
+            )
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = formatTimeStamp(offer.createdAtMs),
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+            Text(
+                text = if (expanded) "Ocultar" else "Detalhes",
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.Neon,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun SeenOfferExpandedContent(
+    offer: SeenOffer,
+    onSave: () -> Unit,
+    onIgnore: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        DividerLine()
+        val title = displaySeenOfferTitle(offer)
+        if (title != platformLabel(offer.platform)) {
+            DetailLine("Produto", title)
+        }
+        DetailLine("Origem", offer.originPreview ?: "-")
+        DetailLine("Destino", offer.destinationPreview ?: "-")
+        MetricsRow(
+            title = "Busca",
+            time = offer.pickupTimeMin,
+            distance = normalizedDistanceForDisplay(offer.pickupDistanceKm)
+        )
+        MetricsRow(
+            title = "Viagem",
+            time = offer.tripTimeMin,
+            distance = normalizedDistanceForDisplay(offer.tripDistanceKm)
+        )
+        DetailLine(
+            "Total",
+            normalizedDistanceForDisplay(offer.totalDistanceKm)?.let(::formatKm) ?: "-"
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onSave,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF153326),
+                    contentColor = KmOnePalette.Positive
+                )
+            ) {
+                Text("Salvar")
+            }
+            OutlinedButton(
+                onClick = onIgnore,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextSecondary),
+                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+            ) {
+                Text("Ignorar")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DividerLine() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(Color(0x2238FF97))
+    )
+}
+
+@Composable
+private fun LegacySeenOfferCard(
+    offer: SeenOffer,
     onAccept: () -> Unit,
     onReject: () -> Unit,
     onIgnore: () -> Unit
 ) {
     CockpitCard(
-        title = offer.productName ?: platformLabel(offer.platform),
+        title = displaySeenOfferTitle(offer),
         accent = statusColor(offer.status)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -777,25 +1265,19 @@ private fun SeenOfferCard(
             MetricsRow(
                 title = "Busca",
                 time = offer.pickupTimeMin,
-                distance = offer.pickupDistanceKm
+                distance = normalizedDistanceForDisplay(offer.pickupDistanceKm)
             )
             MetricsRow(
                 title = "Viagem",
                 time = offer.tripTimeMin,
-                distance = offer.tripDistanceKm
+                distance = normalizedDistanceForDisplay(offer.tripDistanceKm)
             )
-            offer.totalDistanceKm?.let {
-                DetailLine("Total", formatKm(it))
-            }
-            if (!offer.rawTextPreview.isNullOrBlank()) {
-                Text(
-                    text = offer.rawTextPreview,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = KmOnePalette.TextSecondary,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            DetailLine("Origem", offer.originPreview ?: "—")
+            DetailLine("Destino", offer.destinationPreview ?: "—")
+            DetailLine(
+                "Total",
+                normalizedDistanceForDisplay(offer.totalDistanceKm)?.let(::formatKm) ?: "—"
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
                     onClick = onAccept,
@@ -828,26 +1310,407 @@ private fun SeenOfferCard(
 }
 
 @Composable
-private fun SavedRideCard(ride: SavedRide) {
+private fun DailyGoalCard(
+    summary: HomeDailySummary,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onConfigureGoal: () -> Unit
+) {
+    val statusText = when {
+        summary.goalSource == HomeGoalSource.CONFIGURED -> "Meta diaria"
+        summary.goalSource == HomeGoalSource.FALLBACK -> "Meta base do dia"
+        else -> "Meta diaria"
+    }
     CockpitCard(
-        title = ride.productName ?: platformLabel(ride.platform),
-        accent = KmOnePalette.ElectricBlue
+        title = "Meta diaria",
+        accent = KmOnePalette.Neon
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
             ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    StatusChip(
+                        text = statusText,
+                        background = Color(0x1F5BFF9A),
+                        textColor = KmOnePalette.Neon
+                    )
+                    Text(
+                        text = when {
+                            summary.goalSource == HomeGoalSource.MISSING -> "Defina uma meta diaria"
+                            summary.isGoalReached -> "Meta batida"
+                            else -> "Faltam ${formatMoney(summary.remainingToGoal)}"
+                        },
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = KmOnePalette.TextPrimary
+                    )
+                    Text(
+                        text = when {
+                            summary.goalSource == HomeGoalSource.MISSING ->
+                                "Configure uma meta para acompanhar seu progresso do dia."
+                            summary.isGoalReached ->
+                                "Voce passou ${formatMoney(summary.earnedToday - (summary.dailyGoal ?: 0.0))} da meta de hoje."
+                            else -> "para bater sua meta diaria"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = KmOnePalette.TextSecondary
+                    )
+                }
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = KmOnePalette.Neon
+                    )
+                } else {
+                    StatusChip(
+                        text = "${summary.progressPercent ?: 0}% concluido",
+                        background = Color(0x14244D78),
+                        textColor = KmOnePalette.ElectricBlue
+                    )
+                }
+            }
+
+            GoalProgressBar(progress = summary.progressFraction)
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                SummaryMetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Hoje",
+                    value = formatMoney(summary.earnedToday),
+                    accent = KmOnePalette.Neon,
+                    iconResId = R.drawable.ic_today_earnings
+                )
+                SummaryMetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = if (summary.goalSource == HomeGoalSource.MISSING) "Meta" else "Falta",
+                    value = if (summary.goalSource == HomeGoalSource.MISSING) {
+                        "Nao definida"
+                    } else {
+                        formatMoney(summary.remainingToGoal)
+                    },
+                    accent = KmOnePalette.ElectricBlue,
+                    iconResId = R.drawable.ic_goal_remaining
+                )
+            }
+
+            DetailLine(
+                label = "Meta",
+                value = summary.dailyGoal?.let(::formatMoney)
+                    ?: "Nao configurada"
+            )
+            if (errorMessage != null) {
+                Text(
+                    text = errorMessage,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.Attention
+                )
+            }
+            if (summary.goalSource != HomeGoalSource.CONFIGURED) {
+                TextButton(onClick = onConfigureGoal) {
+                    Text("Configurar meta", color = KmOnePalette.Neon)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GoalProgressBar(progress: Float) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(14.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(Color(0xFF112033))
+            .border(1.dp, KmOnePalette.Line, RoundedCornerShape(20.dp))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(20.dp))
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(KmOnePalette.NeonSoft, KmOnePalette.Neon)
+                    )
+                )
+        )
+    }
+}
+
+@Composable
+private fun SummaryMetricPanel(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    accent: Color,
+    iconResId: Int
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = KmOnePalette.CardAlt,
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.35f))
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(accent.copy(alpha = 0.15f))
+                    .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                androidx.compose.foundation.Image(
+                    painter = painterResource(iconResId),
+                    contentDescription = label,
+                    modifier = Modifier.size(16.dp),
+                    colorFilter = ColorFilter.tint(accent)
+                )
+            }
+            Text(
+                text = value,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnalyzeOfferCta(
+    isServiceActive: Boolean,
+    onManualAnalyze: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = KmOnePalette.CardAlt,
+        border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = "Analisar oferta",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = KmOnePalette.TextPrimary
+                )
+                Text(
+                    text = if (isServiceActive) {
+                        "Use quando quiser avaliar uma oferta manualmente."
+                    } else {
+                        "Ative o KM One para usar a leitura manual."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+            }
+            Button(
+                onClick = onManualAnalyze,
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = KmOnePalette.Neon,
+                    contentColor = KmOnePalette.Background
+                )
+            ) {
+                Text("Analisar agora", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BestRideCard(summary: HomeDailySummary) {
+    CockpitCard(
+        title = "Melhor corrida do dia",
+        accent = Color(0x445AA8FF)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                text = summary.bestRideValuePerKm?.let(::formatPerKm) ?: formatMoney(summary.bestRidePrice),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary
+            )
+            Text(
+                text = summary.bestRideProductName ?: "Corrida aceita manualmente",
+                style = MaterialTheme.typography.bodyMedium,
+                color = KmOnePalette.TextSecondary
+            )
+            summary.bestRidePrice?.let {
+                DetailLine("Valor", formatMoney(it))
+            }
+            summary.bestRideValuePerKm?.let {
+                DetailLine("R$/km", formatPerKm(it))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordsSummaryCard(summary: RecordsSummary) {
+    CockpitCard(
+        title = recordsPeriodTitle(summary.period),
+        accent = KmOnePalette.ElectricBlue
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text(
+                text = formatMoney(summary.totalEarned),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Corridas",
+                    value = summary.ridesCount.toString(),
+                    accent = KmOnePalette.Neon,
+                    valueStyle = MaterialTheme.typography.titleLarge
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Km",
+                    value = summary.totalKm?.let(::formatKmCompact) ?: "--",
+                    accent = KmOnePalette.ElectricBlue,
+                    valueStyle = MaterialTheme.typography.titleLarge
+                )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Media",
+                    value = summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
+                    accent = KmOnePalette.Attention,
+                    valueStyle = MaterialTheme.typography.titleLarge
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecordsPeriodFilterTabs(
+    selectedPeriod: RecordsPeriodFilter,
+    onPeriodSelected: (RecordsPeriodFilter) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        RecordsPeriodFilter.entries.forEach { period ->
+            val selected = period == selectedPeriod
+            Surface(
+                shape = RoundedCornerShape(18.dp),
+                color = if (selected) Color(0x1F5BFF9A) else KmOnePalette.CardAlt,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    if (selected) KmOnePalette.Neon else Color(0x3327C87B)
+                ),
+                modifier = Modifier.clickable { onPeriodSelected(period) }
+            ) {
+                Text(
+                    text = recordsPeriodShortLabel(period),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    color = if (selected) KmOnePalette.Neon else KmOnePalette.TextSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedRideAccordionCard(
+    ride: SavedRide,
+    period: RecordsPeriodFilter,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggleExpanded),
+        shape = RoundedCornerShape(24.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x335AA8FF))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SavedRideCollapsedContent(
+                ride = ride,
+                period = period,
+                expanded = expanded
+            )
+            if (expanded) {
+                SavedRideExpandedContent(
+                    ride = ride,
+                    period = period,
+                    onEdit = onEdit,
+                    onDelete = onDelete
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedRideCollapsedContent(
+    ride: SavedRide,
+    period: RecordsPeriodFilter,
+    expanded: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(
                     text = platformLabel(ride.platform),
                     background = Color(0x1F5AA8FF),
                     textColor = KmOnePalette.ElectricBlue
                 )
-                Text(
-                    text = formatTimeStamp(ride.acceptedAtMs),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = KmOnePalette.TextSecondary
-                )
+                ride.valuePerKm?.let {
+                    StatusChip(
+                        text = formatPerKm(it),
+                        background = Color(0x1AFFFFFF),
+                        textColor = KmOnePalette.Neon
+                    )
+                }
             }
             Text(
                 text = formatMoney(ride.price),
@@ -855,12 +1718,76 @@ private fun SavedRideCard(ride: SavedRide) {
                 fontWeight = FontWeight.Bold,
                 color = KmOnePalette.TextPrimary
             )
-            ride.valuePerKm?.let { DetailLine("R$/km", "${formatMoney(it)}/km") }
-            MetricsRow("Busca", ride.pickupTimeMin, ride.pickupDistanceKm)
-            MetricsRow("Viagem", ride.tripTimeMin, ride.tripDistanceKm)
-            ride.totalDistanceKm?.let { DetailLine("Total", formatKm(it)) }
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = formatRecordStamp(ride.acceptedAtMs, period),
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+            Text(
+                text = if (expanded) "Ocultar" else "Detalhes",
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.Neon,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
+}
+
+@Composable
+private fun SavedRideExpandedContent(
+    ride: SavedRide,
+    period: RecordsPeriodFilter,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        DividerLine()
+        DetailLine("Produto", ride.productName ?: platformLabel(ride.platform))
+        DetailLine("Quando", formatRecordStamp(ride.acceptedAtMs, period, includeDateForDay = true))
+        DetailLine("Origem", ride.originPreview ?: "-")
+        DetailLine("Destino", ride.destinationPreview ?: "-")
+        MetricsRow("Busca", ride.pickupTimeMin, normalizedDistanceForDisplay(ride.pickupDistanceKm))
+        MetricsRow("Viagem", ride.tripTimeMin, normalizedDistanceForDisplay(ride.tripDistanceKm))
+        DetailLine(
+            "Total",
+            normalizedDistanceForDisplay(rideDistanceKmForDisplay(ride))?.let(::formatKm) ?: "-"
+        )
+        DetailLine("Fonte", savedRideSourceLabel(ride.source))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onEdit,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.ElectricBlue),
+                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.ElectricBlue)
+            ) {
+                Text("Editar")
+            }
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.Negative),
+                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Negative)
+            ) {
+                Text("Excluir")
+            }
+        }
+    }
+}
+
+private fun displaySeenOfferTitle(offer: SeenOffer): String {
+    val productName = offer.productName?.takeUnless(SeenOfferSanitizationRules::isBadProductName)
+    return productName ?: platformLabel(offer.platform)
+}
+
+private fun normalizedDistanceForDisplay(value: Double?): Double? {
+    return value?.takeIf { it > 0.0 }
 }
 
 @Composable
@@ -876,6 +1803,20 @@ private fun MetricsRow(
             distance?.let(::formatKm)
         ).joinToString(" • ").ifBlank { "n/d" }
     )
+}
+
+@Composable
+private fun EmptyStateCard(
+    title: String,
+    message: String
+) {
+    CockpitCard(title = title, accent = KmOnePalette.Line) {
+        Text(
+            text = message,
+            color = KmOnePalette.TextSecondary,
+            style = MaterialTheme.typography.bodyMedium
+        )
+    }
 }
 
 @Composable
@@ -1053,8 +1994,16 @@ private fun formatMoney(value: Double?): String {
     return "R$ " + String.format(Locale.US, "%.2f", value).replace(".", ",")
 }
 
+private fun formatPerKm(value: Double): String {
+    return "${formatMoney(value)}/km"
+}
+
 private fun formatKm(value: Double): String {
     return String.format(Locale.US, "%.1f km", value).replace(".", ",")
+}
+
+private fun formatKmCompact(value: Double): String {
+    return String.format(Locale.US, "%.1f", value).replace(".", ",") + " km"
 }
 
 private fun formatMinutes(value: Double): String {
@@ -1065,10 +2014,74 @@ private fun formatTimeStamp(timestamp: Long): String {
     return SimpleDateFormat("HH:mm", Locale.forLanguageTag("pt-BR")).format(Date(timestamp))
 }
 
+private fun formatRecordStamp(
+    timestamp: Long,
+    period: RecordsPeriodFilter,
+    includeDateForDay: Boolean = false
+): String {
+    val pattern = when {
+        period == RecordsPeriodFilter.DAY && !includeDateForDay -> "HH:mm"
+        else -> "dd/MM HH:mm"
+    }
+    return SimpleDateFormat(pattern, Locale.forLanguageTag("pt-BR")).format(Date(timestamp))
+}
+
+private fun recordsPeriodTitle(period: RecordsPeriodFilter): String {
+    return when (period) {
+        RecordsPeriodFilter.DAY -> "Total do dia"
+        RecordsPeriodFilter.WEEK -> "Total da semana"
+        RecordsPeriodFilter.MONTH -> "Total do mes"
+    }
+}
+
+private fun recordsPeriodShortLabel(period: RecordsPeriodFilter): String {
+    return when (period) {
+        RecordsPeriodFilter.DAY -> "Dia"
+        RecordsPeriodFilter.WEEK -> "Semana"
+        RecordsPeriodFilter.MONTH -> "Mes"
+    }
+}
+
+private fun rideDistanceKmForDisplay(ride: SavedRide): Double? {
+    return normalizedDistanceForDisplay(
+        ride.totalDistanceKm
+            ?: when {
+                ride.pickupDistanceKm != null && ride.tripDistanceKm != null -> ride.pickupDistanceKm + ride.tripDistanceKm
+                else -> ride.tripDistanceKm
+            }
+    )
+}
+
+private fun savedRideSourceLabel(source: SavedRideSource): String {
+    return when (source) {
+        SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT -> "Oferta salva"
+        SavedRideSource.MANUAL_ENTRY -> "Manual"
+    }
+}
+
 private data class QuickAction(
     val label: String,
     val onClick: () -> Unit
 )
+
+private fun emptyHomeSummary(): HomeDailySummary {
+    return HomeDailySummary(
+        dailyGoal = HomeDailySummaryProvider.DEFAULT_FALLBACK_DAILY_GOAL_BRL,
+        goalSource = HomeGoalSource.FALLBACK,
+        earnedToday = 0.0,
+        remainingToGoal = HomeDailySummaryProvider.DEFAULT_FALLBACK_DAILY_GOAL_BRL,
+        progressPercent = 0,
+        progressFraction = 0f,
+        acceptedRidesCount = 0,
+        seenOffersCount = 0,
+        totalKmToday = null,
+        averageValuePerKm = null,
+        bestRideValuePerKm = null,
+        bestRidePrice = null,
+        bestRideProductName = null,
+        isGoalReached = false
+    )
+}
 
 @Preview(showBackground = true)
 @Composable

@@ -4,12 +4,15 @@ import com.lucastrevvos.kmonemotor.radar.fingerprint.ExtractedNumericCandidate
 import com.lucastrevvos.kmonemotor.radar.fingerprint.OfferTextFingerprint
 import com.lucastrevvos.kmonemotor.radar.fingerprint.OfferTextFingerprintKind
 import com.lucastrevvos.kmonemotor.radar.fingerprint.PlatformTextHint
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrObservation
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserResult
 import com.lucastrevvos.kmonemotor.radar.parser.ParsedPlatform
 import java.util.UUID
 
-class SeenOfferMapper {
+class SeenOfferMapper(
+    private val routePreviewExtractor: OfferRoutePreviewExtractor = OfferRoutePreviewExtractor()
+) {
     fun fromPipelineResult(
         fingerprint: OfferTextFingerprint,
         observation: OcrObservation,
@@ -23,10 +26,33 @@ class SeenOfferMapper {
         val tripTime = draft?.tripTimeMinutes?.value ?: timeAt(fingerprint.timeCandidates, 1)
         val totalDistance = listOfNotNull(pickupDistance, tripDistance).takeIf { it.isNotEmpty() }?.sum()
         val totalTime = listOfNotNull(pickupTime, tripTime).takeIf { it.isNotEmpty() }?.sum()
+        val platform = mapPlatform(draft?.platform, fingerprint.platformTextHint)
+        val routePreview = routePreviewExtractor.extract(
+            rawText = observation.rawText.ifBlank { draft?.rawTextPreview.orEmpty() },
+            platform = platform
+        )
+        if (routePreview.originPreview != null || routePreview.destinationPreview != null) {
+            RadarLogger.i(
+                "KM_V2_ROUTE",
+                "KM_V2_ROUTE_PREVIEW_EXTRACTED",
+                "observationId" to observation.observationId,
+                "originPreview" to routePreview.originPreview,
+                "destinationPreview" to routePreview.destinationPreview,
+                "confidence" to routePreview.confidence,
+                "reason" to routePreview.reason
+            )
+        } else {
+            RadarLogger.i(
+                "KM_V2_ROUTE",
+                "KM_V2_ROUTE_PREVIEW_EMPTY",
+                "observationId" to observation.observationId,
+                "reason" to routePreview.reason
+            )
+        }
         return SeenOffer(
             id = UUID.randomUUID().toString(),
             observationId = observation.observationId,
-            platform = mapPlatform(draft?.platform, fingerprint.platformTextHint),
+            platform = platform,
             sourceTrigger = observation.triggerSource.name,
             status = SeenOfferStatus.SEEN,
             price = draft?.price?.value ?: selectMaxValue(fingerprint.priceCandidates),
@@ -38,8 +64,8 @@ class SeenOfferMapper {
             totalDistanceKm = totalDistance,
             estimatedTotalTimeMin = totalTime,
             productName = draft?.product,
-            originPreview = null,
-            destinationPreview = null,
+            originPreview = routePreview.originPreview,
+            destinationPreview = routePreview.destinationPreview,
             rawTextPreview = draft?.rawTextPreview ?: observation.rawText.take(160),
             score = fingerprint.offerLikeScore,
             rawTextHash = fingerprint.rawTextHash,

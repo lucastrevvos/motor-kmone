@@ -10,4 +10,5 @@ interface SeenOfferRepository {
 interface SavedRideRepository {
     fun saveRide(ride: SavedRide): SavedRide
     fun listSavedRides(limit: Int = 100): List<SavedRide>
+    fun deleteRide(id: String): Boolean
 }

@@ -20,6 +20,7 @@ import com.lucastrevvos.kmonemotor.radar.vision.CropKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SeenOfferMapperTest {
@@ -43,6 +44,8 @@ class SeenOfferMapperTest {
         assertEquals(1.2, seenOffer?.pickupDistanceKm)
         assertEquals(4.8, seenOffer?.tripDistanceKm)
         assertEquals(6.0, seenOffer?.totalDistanceKm)
+        assertTrue(seenOffer?.originPreview?.contains("Avenida dos Merlins") == true)
+        assertTrue(seenOffer?.destinationPreview?.contains("Rua X") == true)
     }
 
     @Test
@@ -103,7 +106,7 @@ class SeenOfferMapperTest {
         finishedAtMs = 2L,
         durationMs = 1L,
         success = true,
-        rawText = "UberX R$ 12,50 4 min (1,2 km) 10 min (4,8 km)",
+        rawText = "UberX R$ 12,50 4 min (1,2 km) Avenida dos Merlins, Jurere Oeste, Florianopolis 10 min (4,8 km) Rua X",
         lineCount = 1,
         blockCount = 1,
         errorMessage = null,

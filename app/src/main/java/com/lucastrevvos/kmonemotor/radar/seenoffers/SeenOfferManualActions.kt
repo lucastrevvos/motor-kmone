@@ -24,6 +24,8 @@ class SeenOfferManualActions(
             totalDistanceKm = seenOffer.totalDistanceKm,
             estimatedTotalTimeMin = seenOffer.estimatedTotalTimeMin,
             productName = seenOffer.productName,
+            originPreview = seenOffer.originPreview,
+            destinationPreview = seenOffer.destinationPreview,
             acceptedAtMs = nowMs,
             createdAtMs = nowMs,
             updatedAtMs = nowMs,

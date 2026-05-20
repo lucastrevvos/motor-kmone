@@ -87,6 +87,17 @@ class SeenOfferRepositoriesTest {
         assertEquals(SeenOfferStatus.IGNORED, seenRepo.getSeenOfferById("1")?.status)
     }
 
+    @Test
+    fun deleteRide_removesSavedRide() {
+        val rideRepo = savedRideRepository()
+        rideRepo.saveRide(savedRide(id = "ride-1"))
+
+        val deleted = rideRepo.deleteRide("ride-1")
+
+        assertTrue(deleted)
+        assertTrue(rideRepo.listSavedRides().isEmpty())
+    }
+
     private fun seenOfferRepository(): FileSeenOfferRepository {
         return FileSeenOfferRepository(File(createTempDir(), "seen_offers.json"))
     }
@@ -94,6 +105,27 @@ class SeenOfferRepositoriesTest {
     private fun savedRideRepository(): FileSavedRideRepository {
         return FileSavedRideRepository(File(createTempDir(), "saved_rides.json"))
     }
+
+    private fun savedRide(id: String) = SavedRide(
+        id = id,
+        sourceSeenOfferId = "seen-1",
+        platform = RidePlatform.UBER,
+        price = 12.5,
+        valuePerKm = 2.1,
+        pickupDistanceKm = 1.2,
+        pickupTimeMin = 4.0,
+        tripDistanceKm = 4.8,
+        tripTimeMin = 10.0,
+        totalDistanceKm = 6.0,
+        estimatedTotalTimeMin = 14.0,
+        productName = "UberX",
+        originPreview = "Origem",
+        destinationPreview = "Destino",
+        acceptedAtMs = 2_000L,
+        createdAtMs = 2_000L,
+        updatedAtMs = 2_000L,
+        source = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
+    )
 
     private fun offer(
         id: String,

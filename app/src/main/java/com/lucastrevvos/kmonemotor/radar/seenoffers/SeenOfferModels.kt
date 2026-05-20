@@ -57,6 +57,8 @@ data class SavedRide(
     val totalDistanceKm: Double?,
     val estimatedTotalTimeMin: Double?,
     val productName: String?,
+    val originPreview: String?,
+    val destinationPreview: String?,
     val acceptedAtMs: Long,
     val createdAtMs: Long,
     val updatedAtMs: Long,

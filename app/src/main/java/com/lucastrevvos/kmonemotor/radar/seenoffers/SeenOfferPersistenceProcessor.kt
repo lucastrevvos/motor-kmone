@@ -8,7 +8,8 @@ import com.lucastrevvos.kmonemotor.radar.parser.OfferParserResult
 
 class SeenOfferPersistenceProcessor(
     private val repository: SeenOfferRepository,
-    private val mapper: SeenOfferMapper = SeenOfferMapper()
+    private val mapper: SeenOfferMapper = SeenOfferMapper(),
+    private val sanitizer: SeenOfferSanitizer = SeenOfferSanitizer()
 ) {
     fun process(
         fingerprint: OfferTextFingerprint,
@@ -28,14 +29,49 @@ class SeenOfferPersistenceProcessor(
                 persisted = false,
                 reason = "mapping_failed"
             )
+        val sanitization = sanitizer.sanitize(offer)
+        if (!sanitization.shouldPersist || sanitization.sanitizedOffer == null) {
+            RadarLogger.w(
+                "KM_V2_SEEN",
+                "KM_V2_SEEN_OFFER_SANITIZATION_REJECTED",
+                "observationId" to observation.observationId,
+                "reason" to sanitization.reason,
+                "price" to offer.price,
+                "tripDistanceKm" to offer.tripDistanceKm,
+                "totalDistanceKm" to offer.totalDistanceKm
+            )
+            return SeenOfferPersistenceResult(
+                attempted = true,
+                persisted = false,
+                reason = sanitization.reason
+            )
+        }
+        val sanitizedOffer = sanitization.sanitizedOffer
+        if (sanitization.reason == "adjusted") {
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_SEEN_OFFER_SANITIZATION_ADJUSTED",
+                "observationId" to observation.observationId,
+                "reason" to sanitization.warnings.joinToString(",")
+            )
+        } else {
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_SEEN_OFFER_SANITIZATION_ACCEPTED",
+                "observationId" to observation.observationId,
+                "price" to sanitizedOffer.price,
+                "totalDistanceKm" to sanitizedOffer.totalDistanceKm,
+                "warnings" to sanitization.warnings.joinToString(",")
+            )
+        }
         RadarLogger.i(
             "KM_V2_SEEN",
             "KM_V2_SEEN_OFFER_SAVE_ATTEMPT",
             "observationId" to observation.observationId,
-            "platform" to offer.platform,
+            "platform" to sanitizedOffer.platform,
             "fingerprintKind" to fingerprint.kind
         )
-        val saveResult = repository.saveSeenOffer(offer)
+        val saveResult = repository.saveSeenOffer(sanitizedOffer)
         if (saveResult.persisted) {
             RadarLogger.i(
                 "KM_V2_SEEN",

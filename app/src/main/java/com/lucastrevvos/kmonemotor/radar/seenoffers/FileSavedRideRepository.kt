@@ -19,6 +19,16 @@ class FileSavedRideRepository(
         loadRides().sortedByDescending { it.createdAtMs }.take(limit)
     }
 
+    override fun deleteRide(id: String): Boolean = synchronized(lock) {
+        val rides = loadRides()
+        val filtered = rides.filterNot { it.id == id }
+        if (filtered.size == rides.size) {
+            return false
+        }
+        persistRides(filtered)
+        true
+    }
+
     private fun loadRides(): List<SavedRide> {
         if (!storageFile.exists()) return emptyList()
         return storageFile.readLines()
@@ -44,6 +54,8 @@ class FileSavedRideRepository(
         encodeNullable(totalDistanceKm),
         encodeNullable(estimatedTotalTimeMin),
         encodeNullable(productName),
+        encodeNullable(originPreview),
+        encodeNullable(destinationPreview),
         acceptedAtMs.toString(),
         createdAtMs.toString(),
         updatedAtMs.toString(),
@@ -52,6 +64,7 @@ class FileSavedRideRepository(
 
     private fun String.toSavedRide(): SavedRide {
         val parts = split('\t')
+        val hasRoutePreview = parts.size >= 18
         return SavedRide(
             id = decode(parts[0]),
             sourceSeenOfferId = decodeNullable(parts[1]),
@@ -65,10 +78,12 @@ class FileSavedRideRepository(
             totalDistanceKm = decodeDouble(parts[9]),
             estimatedTotalTimeMin = decodeDouble(parts[10]),
             productName = decodeNullable(parts[11]),
-            acceptedAtMs = parts[12].toLong(),
-            createdAtMs = parts[13].toLong(),
-            updatedAtMs = parts[14].toLong(),
-            source = SavedRideSource.valueOf(parts[15])
+            originPreview = if (hasRoutePreview) decodeNullable(parts[12]) else null,
+            destinationPreview = if (hasRoutePreview) decodeNullable(parts[13]) else null,
+            acceptedAtMs = parts[if (hasRoutePreview) 14 else 12].toLong(),
+            createdAtMs = parts[if (hasRoutePreview) 15 else 13].toLong(),
+            updatedAtMs = parts[if (hasRoutePreview) 16 else 14].toLong(),
+            source = SavedRideSource.valueOf(parts[if (hasRoutePreview) 17 else 15])
         )
     }
 
