@@ -16,7 +16,12 @@ class SeenOfferManualActions(
             sourceSeenOfferId = seenOffer.id,
             platform = seenOffer.platform,
             price = seenOffer.price,
-            valuePerKm = seenOffer.valuePerKm,
+            valuePerKm = RideEconomicsCalculator.calculateValuePerKm(
+                price = seenOffer.price,
+                totalDistanceKm = seenOffer.totalDistanceKm,
+                pickupDistanceKm = seenOffer.pickupDistanceKm,
+                tripDistanceKm = seenOffer.tripDistanceKm
+            ) ?: seenOffer.valuePerKm,
             pickupDistanceKm = seenOffer.pickupDistanceKm,
             pickupTimeMin = seenOffer.pickupTimeMin,
             tripDistanceKm = seenOffer.tripDistanceKm,

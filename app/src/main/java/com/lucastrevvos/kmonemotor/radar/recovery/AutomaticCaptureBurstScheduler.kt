@@ -12,7 +12,8 @@ class AutomaticCaptureBurstScheduler(
         token: String,
         delayMs: Long,
         task: () -> Unit
-    ) {
+    ): String? {
+        val replacedToken = pending?.token
         pending?.let { backend.cancel(it.runnable) }
         val runnable = Runnable {
             if (pending?.token != token) return@Runnable
@@ -21,6 +22,7 @@ class AutomaticCaptureBurstScheduler(
         }
         pending = ScheduledTask(token, runnable)
         backend.postDelayed(runnable, delayMs)
+        return replacedToken
     }
 
     fun cancel(reason: String? = null): String? {

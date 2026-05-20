@@ -34,6 +34,15 @@ class RadarCaptureOrchestrator(
     private var pendingCaptureRequest: CaptureRequest? = null
     private val finishedCaptureIds = mutableSetOf<String>()
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
+
+    fun debugBusyReason(): String? {
+        return when {
+            activeCapture != null -> "active_capture_busy"
+            pendingCaptureRequest?.priority == CapturePriority.HIGH ||
+                pendingCaptureRequest?.priority == CapturePriority.CRITICAL -> "high_priority_pending_exists"
+            else -> null
+        }
+    }
     private val uberDominantDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
     private val ninetyNineCompactDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
 

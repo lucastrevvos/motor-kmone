@@ -79,6 +79,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeGoalSource
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsPeriodFilter
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummary
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummaryProvider
+import com.lucastrevvos.kmonemotor.radar.seenoffers.RideEconomicsCalculator
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRide
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRideSource
@@ -86,6 +87,8 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferRuntime
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferSanitizationRules
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiMapper
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiModel
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffersUiState
 import com.lucastrevvos.kmonemotor.ui.theme.KMONEMotorTheme
 import kotlinx.coroutines.Dispatchers
@@ -777,6 +780,9 @@ private fun SeenOffersTab(
                 !SeenOfferSanitizationRules.isSuspiciousForPendingQueue(offer)
         }
     }
+    val uiMapper = remember { SeenOfferUiMapper() }
+    val uiModels = remember(filteredOffers) { filteredOffers.map(uiMapper::map) }
+    val offerById = remember(filteredOffers) { filteredOffers.associateBy { it.id } }
     var expandedSeenOfferId by remember(filteredOffers) { mutableStateOf<String?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -820,9 +826,11 @@ private fun SeenOffersTab(
                         }
                     )
                 }
-                items(filteredOffers, key = { it.id }) { offer ->
+                items(uiModels, key = { it.id }) { uiModel ->
+                    val offer = offerById[uiModel.id] ?: return@items
                     SeenOfferCard(
                         offer = offer,
+                        uiModel = uiModel,
                         expanded = expandedSeenOfferId == offer.id,
                         onToggleExpanded = {
                             expandedSeenOfferId = if (expandedSeenOfferId == offer.id) null else offer.id
@@ -1442,6 +1450,7 @@ private fun FilterRow(
 @Composable
 private fun SeenOfferCard(
     offer: SeenOffer,
+    uiModel: SeenOfferUiModel,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
     onSave: () -> Unit,
@@ -1460,12 +1469,13 @@ private fun SeenOfferCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             SeenOfferCollapsedContent(
-                offer = offer,
+                uiModel = uiModel,
                 expanded = expanded
             )
             if (expanded) {
                 SeenOfferExpandedContent(
                     offer = offer,
+                    uiModel = uiModel,
                     onSave = onSave,
                     onIgnore = onIgnore
                 )
@@ -1503,7 +1513,7 @@ private fun SeenOffersHeaderActions(
 
 @Composable
 private fun SeenOfferCollapsedContent(
-    offer: SeenOffer,
+    uiModel: SeenOfferUiModel,
     expanded: Boolean
 ) {
     Row(
@@ -1517,20 +1527,18 @@ private fun SeenOfferCollapsedContent(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(
-                    text = platformLabel(offer.platform),
+                    text = uiModel.platformLabel,
                     background = Color(0x1F5AA8FF),
                     textColor = KmOnePalette.ElectricBlue
                 )
-                offer.valuePerKm?.let {
-                    StatusChip(
-                        text = formatPerKm(it),
-                        background = Color(0x1AFFFFFF),
-                        textColor = KmOnePalette.Neon
-                    )
-                }
+                StatusChip(
+                    text = uiModel.valuePerKmLabel,
+                    background = Color(0x1AFFFFFF),
+                    textColor = if (uiModel.valuePerKmLabel != "R$/km —") KmOnePalette.Neon else KmOnePalette.TextSecondary
+                )
             }
             Text(
-                text = formatMoney(offer.price),
+                text = uiModel.priceLabel,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = KmOnePalette.TextPrimary
@@ -1541,7 +1549,7 @@ private fun SeenOfferCollapsedContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = formatTimeStamp(offer.createdAtMs),
+                text = uiModel.timeLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = KmOnePalette.TextSecondary
             )
@@ -1558,17 +1566,16 @@ private fun SeenOfferCollapsedContent(
 @Composable
 private fun SeenOfferExpandedContent(
     offer: SeenOffer,
+    uiModel: SeenOfferUiModel,
     onSave: () -> Unit,
     onIgnore: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
-        val title = displaySeenOfferTitle(offer)
-        if (title != platformLabel(offer.platform)) {
-            DetailLine("Produto", title)
-        }
-        DetailLine("Origem", offer.originPreview ?: "-")
-        DetailLine("Destino", offer.destinationPreview ?: "-")
+        uiModel.productName?.let { DetailLine("Produto", it) }
+        DetailLine("R$/km", resolvedSeenOfferValuePerKm(offer)?.let(::formatPerKm) ?: "—")
+        DetailLine("Origem", offer.originPreview ?: "—")
+        DetailLine("Destino", offer.destinationPreview ?: "—")
         MetricsRow(
             title = "Busca",
             time = offer.pickupTimeMin,
@@ -1581,7 +1588,7 @@ private fun SeenOfferExpandedContent(
         )
         DetailLine(
             "Total",
-            normalizedDistanceForDisplay(offer.totalDistanceKm)?.let(::formatKm) ?: "-"
+            normalizedDistanceForDisplay(resolvedSeenOfferDistanceKm(offer))?.let(::formatKm) ?: "—"
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
@@ -1654,13 +1661,11 @@ private fun LegacySeenOfferCard(
                         fontWeight = FontWeight.Bold,
                         color = KmOnePalette.TextPrimary
                     )
-                    offer.valuePerKm?.let {
-                        Text(
-                            text = "${formatMoney(it)}/km",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = KmOnePalette.Neon
-                        )
-                    }
+                    Text(
+                        text = seenOfferPerKmLabel(offer),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = if (resolvedSeenOfferValuePerKm(offer) != null) KmOnePalette.Neon else KmOnePalette.TextSecondary
+                    )
                 }
                 Text(
                     text = formatTimeStamp(offer.createdAtMs),
@@ -2281,13 +2286,11 @@ private fun SavedRideCollapsedContent(
                     background = Color(0x1F5AA8FF),
                     textColor = KmOnePalette.ElectricBlue
                 )
-                ride.valuePerKm?.let {
-                    StatusChip(
-                        text = formatPerKm(it),
-                        background = Color(0x1AFFFFFF),
-                        textColor = KmOnePalette.Neon
-                    )
-                }
+                StatusChip(
+                    text = savedRidePerKmLabel(ride),
+                    background = Color(0x1AFFFFFF),
+                    textColor = if (resolvedSavedRideValuePerKm(ride) != null) KmOnePalette.Neon else KmOnePalette.TextSecondary
+                )
             }
             Text(
                 text = formatMoney(ride.price),
@@ -2326,13 +2329,13 @@ private fun SavedRideExpandedContent(
         DividerLine()
         DetailLine("Produto", ride.productName ?: platformLabel(ride.platform))
         DetailLine("Quando", formatRecordStamp(ride.acceptedAtMs, period, includeDateForDay = true))
-        DetailLine("Origem", ride.originPreview ?: "-")
-        DetailLine("Destino", ride.destinationPreview ?: "-")
+        DetailLine("Origem", ride.originPreview ?: "—")
+        DetailLine("Destino", ride.destinationPreview ?: "—")
         MetricsRow("Busca", ride.pickupTimeMin, normalizedDistanceForDisplay(ride.pickupDistanceKm))
         MetricsRow("Viagem", ride.tripTimeMin, normalizedDistanceForDisplay(ride.tripDistanceKm))
         DetailLine(
             "Total",
-            normalizedDistanceForDisplay(rideDistanceKmForDisplay(ride))?.let(::formatKm) ?: "-"
+            normalizedDistanceForDisplay(rideDistanceKmForDisplay(ride))?.let(::formatKm) ?: "—"
         )
         DetailLine("Fonte", savedRideSourceLabel(ride.source))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2768,9 +2771,9 @@ private fun EmptyStateCard(
 
 @Composable
 private fun DetailLine(label: String, value: String) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             text = label,
@@ -2991,11 +2994,11 @@ private fun recordsPeriodShortLabel(period: RecordsPeriodFilter): String {
 
 private fun rideDistanceKmForDisplay(ride: SavedRide): Double? {
     return normalizedDistanceForDisplay(
-        ride.totalDistanceKm
-            ?: when {
-                ride.pickupDistanceKm != null && ride.tripDistanceKm != null -> ride.pickupDistanceKm + ride.tripDistanceKm
-                else -> ride.tripDistanceKm
-            }
+        RideEconomicsCalculator.resolveTotalDistanceKm(
+            totalDistanceKm = ride.totalDistanceKm,
+            pickupDistanceKm = ride.pickupDistanceKm,
+            tripDistanceKm = ride.tripDistanceKm
+        )
     )
 }
 
@@ -3056,17 +3059,48 @@ private fun formatDecimal(value: Double): String {
 }
 
 private fun recalculateValuePerKm(ride: SavedRide): Double? {
-    val totalKm = ride.totalDistanceKm
-        ?: when {
-            ride.pickupDistanceKm != null && ride.tripDistanceKm != null -> ride.pickupDistanceKm + ride.tripDistanceKm
-            ride.tripDistanceKm != null -> ride.tripDistanceKm
-            else -> null
-        }
-    return if (ride.price != null && totalKm != null && totalKm > 0.0) {
-        ride.price / totalKm
-    } else {
-        null
-    }
+    return RideEconomicsCalculator.calculateValuePerKm(
+        price = ride.price,
+        totalDistanceKm = ride.totalDistanceKm,
+        pickupDistanceKm = ride.pickupDistanceKm,
+        tripDistanceKm = ride.tripDistanceKm
+    )
+}
+
+private fun resolvedSeenOfferDistanceKm(offer: SeenOffer): Double? {
+    return com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferConsistencyAuditor()
+        .audit(offer)
+        .normalizedOffer
+        .totalDistanceKm
+}
+
+private fun resolvedSeenOfferValuePerKm(offer: SeenOffer): Double? {
+    val normalized = com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferConsistencyAuditor()
+        .audit(offer)
+        .normalizedOffer
+    return normalized.valuePerKm ?: RideEconomicsCalculator.calculateValuePerKm(
+        price = normalized.price,
+        totalDistanceKm = normalized.totalDistanceKm,
+        pickupDistanceKm = normalized.pickupDistanceKm,
+        tripDistanceKm = normalized.tripDistanceKm
+    )
+}
+
+private fun seenOfferPerKmLabel(offer: SeenOffer): String {
+    return resolvedSeenOfferValuePerKm(offer)?.let(::formatPerKm) ?: "R$/km —"
+}
+
+private fun resolvedSavedRideValuePerKm(ride: SavedRide): Double? {
+    return RideEconomicsCalculator.calculateValuePerKm(
+        price = ride.price,
+        totalDistanceKm = ride.totalDistanceKm,
+        pickupDistanceKm = ride.pickupDistanceKm,
+        tripDistanceKm = ride.tripDistanceKm
+    ) ?: ride.valuePerKm
+}
+
+private fun savedRidePerKmLabel(ride: SavedRide): String {
+    return resolvedSavedRideValuePerKm(ride)?.let(::formatPerKm) ?: "R$/km —"
 }
 
 private fun parseManualRidePlatform(value: String): RidePlatform {

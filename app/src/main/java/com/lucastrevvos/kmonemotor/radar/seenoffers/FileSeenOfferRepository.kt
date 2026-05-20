@@ -1,12 +1,12 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import java.io.File
 import java.util.Base64
-import kotlin.math.abs
 
 class FileSeenOfferRepository(
     private val storageFile: File,
-    private val duplicateWindowMs: Long = 30_000L
+    private val mergePolicy: SeenOfferMergePolicy = SeenOfferMergePolicy()
 ) : SeenOfferRepository {
     private val lock = Any()
 
@@ -18,12 +18,73 @@ class FileSeenOfferRepository(
         }
         val duplicate = offers
             .asReversed()
-            .firstOrNull { isRecentDuplicate(candidate = offer, existing = it) }
+            .firstOrNull { mergePolicy.isSameOffer(candidate = offer, existing = it) }
         if (duplicate != null) {
-            val refreshed = duplicate.copy(updatedAtMs = offer.updatedAtMs)
-            offers.replaceAll { current -> if (current.id == duplicate.id) refreshed else current }
-            persistOffers(offers)
-            return SeenOfferSaveResult(false, refreshed, "similar_offer_recently_saved")
+            val platformResolution = mergePolicy.resolvePlatformResolution(
+                candidate = offer,
+                existing = duplicate
+            )
+            if (offer.platform == RidePlatform.UNKNOWN && platformResolution != null) {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SEEN_OFFER_PLATFORM_INFERRED_FOR_MERGE",
+                    "candidatePlatform" to offer.platform,
+                    "effectivePlatform" to platformResolution.effectiveCandidatePlatform,
+                    "reason" to platformResolution.reason,
+                    "newObservationId" to offer.observationId,
+                    "existingSeenOfferId" to duplicate.id
+                )
+            }
+            val existingQuality = mergePolicy.qualityScore(duplicate)
+            val newQuality = mergePolicy.qualityScore(offer)
+            val manualAuthority = mergePolicy.isManualRecentAuthorityCandidate(
+                candidate = offer,
+                existing = duplicate
+            )
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_SEEN_OFFER_MERGE_CANDIDATE",
+                "newObservationId" to offer.observationId,
+                "existingSeenOfferId" to duplicate.id,
+                "existingQuality" to existingQuality,
+                "newQuality" to newQuality,
+                "existingTriggerSource" to duplicate.sourceTrigger,
+                "newTriggerSource" to offer.sourceTrigger,
+                "reason" to if (manualAuthority) "manual_recent_authority" else "duplicate_window_match"
+            )
+            if (newQuality > existingQuality) {
+                val merged = mergePolicy.mergeBetter(duplicate, offer)
+                offers.replaceAll { current -> if (current.id == duplicate.id) merged else current }
+                persistOffers(offers)
+                val reason = if (manualAuthority) {
+                    "manual_recent_authority_better_auto_merged_silently"
+                } else {
+                    "merged_better_version"
+                }
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SEEN_OFFER_MERGED_BETTER_VERSION",
+                    "seenOfferId" to duplicate.id,
+                    "oldQuality" to existingQuality,
+                    "newQuality" to newQuality,
+                    "reason" to if (manualAuthority) "manual_recent_authority" else "quality_better_version"
+                )
+                return SeenOfferSaveResult(true, merged, reason)
+            }
+            val reason = if (manualAuthority) {
+                "manual_recent_authority_weaker_auto_ignored"
+            } else {
+                "weaker_duplicate_offer_recently_saved"
+            }
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_SEEN_OFFER_DEDUPE_SKIPPED_WEAKER_VERSION",
+                "existingSeenOfferId" to duplicate.id,
+                "oldQuality" to existingQuality,
+                "newQuality" to newQuality,
+                "reason" to if (manualAuthority) "manual_recent_authority" else "weaker_duplicate_offer_recently_saved"
+            )
+            return SeenOfferSaveResult(false, duplicate, reason)
         }
         offers += offer
         persistOffers(offers)
@@ -38,6 +99,15 @@ class FileSeenOfferRepository(
         loadOffers().firstOrNull { it.id == id }
     }
 
+    override fun updateSeenOffer(offer: SeenOffer): SeenOffer? = synchronized(lock) {
+        val offers = loadOffers().toMutableList()
+        val index = offers.indexOfFirst { it.id == offer.id }
+        if (index == -1) return null
+        offers[index] = offer
+        persistOffers(offers)
+        offer
+    }
+
     override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus): SeenOffer? = synchronized(lock) {
         val offers = loadOffers().toMutableList()
         val existing = offers.firstOrNull { it.id == id } ?: return null
@@ -45,37 +115,6 @@ class FileSeenOfferRepository(
         offers.replaceAll { current -> if (current.id == id) updated else current }
         persistOffers(offers)
         updated
-    }
-
-    private fun isRecentDuplicate(candidate: SeenOffer, existing: SeenOffer): Boolean {
-        if (candidate.platform != existing.platform) return false
-        if (abs(candidate.createdAtMs - existing.createdAtMs) > duplicateWindowMs) return false
-        if (candidate.rawTextHash != null && candidate.rawTextHash == existing.rawTextHash) return true
-        if (candidate.routeTextHash != null && candidate.routeTextHash == existing.routeTextHash &&
-            similarMoney(candidate.price, existing.price)
-        ) {
-            return true
-        }
-        if (!similarMoney(candidate.price, existing.price)) return false
-        if (!compatibleText(candidate.productName, existing.productName)) return false
-        return similarDistance(candidate.pickupDistanceKm, existing.pickupDistanceKm) ||
-            similarDistance(candidate.tripDistanceKm, existing.tripDistanceKm) ||
-            similarDistance(candidate.totalDistanceKm, existing.totalDistanceKm)
-    }
-
-    private fun similarMoney(first: Double?, second: Double?): Boolean {
-        if (first == null || second == null) return false
-        return abs(first - second) <= 0.20
-    }
-
-    private fun similarDistance(first: Double?, second: Double?): Boolean {
-        if (first == null || second == null) return false
-        return abs(first - second) <= 0.30
-    }
-
-    private fun compatibleText(first: String?, second: String?): Boolean {
-        if (first.isNullOrBlank() || second.isNullOrBlank()) return true
-        return first.equals(second, ignoreCase = true)
     }
 
     private fun loadOffers(): List<SeenOffer> {

@@ -24,7 +24,11 @@ class SeenOfferMapper(
         val tripDistance = draft?.tripDistanceKm?.value ?: distanceAt(fingerprint.distanceCandidates, 1)
         val pickupTime = draft?.pickupTimeMinutes?.value ?: timeAt(fingerprint.timeCandidates, 0)
         val tripTime = draft?.tripTimeMinutes?.value ?: timeAt(fingerprint.timeCandidates, 1)
-        val totalDistance = listOfNotNull(pickupDistance, tripDistance).takeIf { it.isNotEmpty() }?.sum()
+        val totalDistance = RideEconomicsCalculator.resolveTotalDistanceKm(
+            totalDistanceKm = null,
+            pickupDistanceKm = pickupDistance,
+            tripDistanceKm = tripDistance
+        )
         val totalTime = listOfNotNull(pickupTime, tripTime).takeIf { it.isNotEmpty() }?.sum()
         val platform = mapPlatform(draft?.platform, fingerprint.platformTextHint)
         val routePreview = routePreviewExtractor.extract(
@@ -49,14 +53,21 @@ class SeenOfferMapper(
                 "reason" to routePreview.reason
             )
         }
+        val price = draft?.price?.value ?: selectMaxValue(fingerprint.priceCandidates)
+        val fallbackValuePerKm = draft?.valuePerKm?.value ?: selectMaxValue(fingerprint.valuePerKmCandidates)
         return SeenOffer(
             id = UUID.randomUUID().toString(),
             observationId = observation.observationId,
             platform = platform,
             sourceTrigger = observation.triggerSource.name,
             status = SeenOfferStatus.SEEN,
-            price = draft?.price?.value ?: selectMaxValue(fingerprint.priceCandidates),
-            valuePerKm = draft?.valuePerKm?.value ?: selectMaxValue(fingerprint.valuePerKmCandidates),
+            price = price,
+            valuePerKm = RideEconomicsCalculator.calculateValuePerKm(
+                price = price,
+                totalDistanceKm = totalDistance,
+                pickupDistanceKm = pickupDistance,
+                tripDistanceKm = tripDistance
+            ) ?: fallbackValuePerKm,
             pickupDistanceKm = pickupDistance,
             pickupTimeMin = pickupTime,
             tripDistanceKm = tripDistance,

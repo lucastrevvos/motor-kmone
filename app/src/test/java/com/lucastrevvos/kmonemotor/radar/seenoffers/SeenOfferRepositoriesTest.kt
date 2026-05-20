@@ -26,7 +26,7 @@ class SeenOfferRepositoriesTest {
         val result = repo.saveSeenOffer(offer(id = "2", observationId = "obs-2", createdAtMs = 5_000L))
 
         assertFalse(result.persisted)
-        assertEquals("similar_offer_recently_saved", result.reason)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
         assertEquals(1, repo.listSeenOffers().size)
     }
 
@@ -49,6 +49,218 @@ class SeenOfferRepositoriesTest {
 
         assertTrue(result.persisted)
         assertEquals(2, repo.listSeenOffers().size)
+    }
+
+    @Test
+    fun betterDuplicateOffer_mergesInsteadOfCreatingNewCard() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "1",
+                observationId = "obs-1",
+                originPreview = null,
+                destinationPreview = null,
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "2",
+                observationId = "obs-2",
+                originPreview = "Origem melhor",
+                destinationPreview = "Destino melhor",
+                createdAtMs = 5_000L
+            )
+        )
+
+        assertTrue(result.persisted)
+        assertEquals("merged_better_version", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("Origem melhor", repo.listSeenOffers().first().originPreview)
+    }
+
+    @Test
+    fun weakerDuplicateOffer_isIgnored() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "1",
+                observationId = "obs-1",
+                originPreview = "Origem melhor",
+                destinationPreview = "Destino melhor",
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "2",
+                observationId = "obs-2",
+                originPreview = null,
+                destinationPreview = null,
+                createdAtMs = 5_000L
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("Origem melhor", repo.listSeenOffers().first().originPreview)
+    }
+
+    @Test
+    fun samePlatformSamePriceWithinShortWindow_mergesEvenWithDifferentDistance() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "manual-1",
+                observationId = "obs-manual",
+                price = 9.01,
+                pickupDistanceKm = 3.2,
+                tripDistanceKm = 5.3,
+                totalDistanceKm = 8.5,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "auto-1",
+                observationId = "obs-auto",
+                price = 9.01,
+                pickupDistanceKm = 8.0,
+                tripDistanceKm = 9.0,
+                totalDistanceKm = 17.0,
+                sourceTrigger = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
+                createdAtMs = 4_000L
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("manual_recent_authority_weaker_auto_ignored", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("obs-manual", repo.listSeenOffers().first().observationId)
+        assertEquals(8.5, repo.listSeenOffers().first().totalDistanceKm ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun recentManualAuthority_ignoresWeakerAutomaticEquivalent() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "manual-1",
+                observationId = "obs-manual",
+                price = 9.01,
+                pickupDistanceKm = 3.2,
+                tripDistanceKm = 5.3,
+                totalDistanceKm = 8.5,
+                originPreview = "Origem manual",
+                destinationPreview = "Destino manual",
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "auto-1",
+                observationId = "obs-auto",
+                price = 9.01,
+                pickupDistanceKm = 9.0,
+                tripDistanceKm = 8.0,
+                totalDistanceKm = 17.0,
+                originPreview = null,
+                destinationPreview = null,
+                sourceTrigger = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
+                createdAtMs = 4_000L
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("manual_recent_authority_weaker_auto_ignored", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("obs-manual", repo.listSeenOffers().first().observationId)
+        assertEquals(8.5, repo.listSeenOffers().first().totalDistanceKm ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun recentManualAuthority_mergesBetterAutomaticSilently() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "manual-1",
+                observationId = "obs-manual",
+                price = 9.01,
+                pickupDistanceKm = 3.2,
+                tripDistanceKm = 5.3,
+                totalDistanceKm = 8.5,
+                originPreview = null,
+                destinationPreview = null,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "auto-1",
+                observationId = "obs-auto",
+                price = 9.01,
+                pickupDistanceKm = 3.2,
+                tripDistanceKm = 5.3,
+                totalDistanceKm = 8.5,
+                originPreview = "Origem melhor",
+                destinationPreview = "Destino melhor",
+                sourceTrigger = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
+                createdAtMs = 4_000L
+            )
+        )
+
+        assertTrue(result.persisted)
+        assertEquals("manual_recent_authority_better_auto_merged_silently", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("Origem melhor", repo.listSeenOffers().first().originPreview)
+        assertEquals("Destino melhor", repo.listSeenOffers().first().destinationPreview)
+    }
+
+    @Test
+    fun manualUnknownPlatformSamePriceShortlyAfterUber_mergesInsteadOfSavingSecondCard() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "auto-1",
+                observationId = "obs-auto",
+                platform = RidePlatform.UBER,
+                price = 7.40,
+                pickupDistanceKm = 3.0,
+                tripDistanceKm = 4.4,
+                totalDistanceKm = 7.4,
+                sourceTrigger = "UBER_AUTO_BURST_RECOVERY",
+                createdAtMs = 1_000L
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "manual-1",
+                observationId = "obs-manual",
+                platform = RidePlatform.UNKNOWN,
+                price = 7.40,
+                pickupDistanceKm = 3.0,
+                tripDistanceKm = 4.4,
+                totalDistanceKm = 7.4,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 4_000L
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals("obs-auto", repo.listSeenOffers().first().observationId)
+        assertEquals(RidePlatform.UBER, repo.listSeenOffers().first().platform)
     }
 
     @Test
@@ -228,28 +440,34 @@ class SeenOfferRepositoriesTest {
     private fun offer(
         id: String,
         observationId: String,
+        platform: RidePlatform = RidePlatform.UBER,
         price: Double = 12.5,
+        pickupDistanceKm: Double? = 1.2,
         tripDistanceKm: Double? = 4.8,
+        totalDistanceKm: Double? = tripDistanceKm?.plus(pickupDistanceKm ?: 0.0),
         rawTextHash: String = "hash-1",
         routeTextHash: String = "route-1",
+        originPreview: String? = null,
+        destinationPreview: String? = null,
+        sourceTrigger: String = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
         createdAtMs: Long
     ) = SeenOffer(
         id = id,
         observationId = observationId,
-        platform = RidePlatform.UBER,
-        sourceTrigger = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
+        platform = platform,
+        sourceTrigger = sourceTrigger,
         status = SeenOfferStatus.SEEN,
         price = price,
         valuePerKm = 2.1,
-        pickupDistanceKm = 1.2,
+        pickupDistanceKm = pickupDistanceKm,
         pickupTimeMin = 4.0,
         tripDistanceKm = tripDistanceKm,
         tripTimeMin = 10.0,
-        totalDistanceKm = tripDistanceKm?.plus(1.2),
+        totalDistanceKm = totalDistanceKm,
         estimatedTotalTimeMin = 14.0,
         productName = "UberX",
-        originPreview = null,
-        destinationPreview = null,
+        originPreview = originPreview,
+        destinationPreview = destinationPreview,
         rawTextPreview = "UberX R$ 12,50",
         score = 9,
         rawTextHash = rawTextHash,

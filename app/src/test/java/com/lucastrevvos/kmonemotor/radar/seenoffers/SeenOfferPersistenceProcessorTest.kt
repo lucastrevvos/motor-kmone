@@ -85,6 +85,8 @@ class SeenOfferPersistenceProcessorTest {
 
         override fun getSeenOfferById(id: String): SeenOffer? = saved.firstOrNull { it.id == id }
 
+        override fun updateSeenOffer(offer: SeenOffer): SeenOffer? = null
+
         override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus): SeenOffer? = null
     }
 }

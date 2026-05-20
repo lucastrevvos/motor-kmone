@@ -134,6 +134,7 @@ class HomeDailySummaryProviderTest {
         override fun saveSeenOffer(offer: SeenOffer) = throw UnsupportedOperationException()
         override fun listSeenOffers(limit: Int) = emptyList<SeenOffer>()
         override fun getSeenOfferById(id: String) = null
+        override fun updateSeenOffer(offer: SeenOffer) = null
         override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus) = null
     }
 

@@ -3,6 +3,7 @@ package com.lucastrevvos.kmonemotor.radar.recovery
 import com.lucastrevvos.kmonemotor.radar.core.RadarFeatureFlags
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
 import com.lucastrevvos.kmonemotor.radar.fingerprint.OfferTextFingerprintKind
+import com.lucastrevvos.kmonemotor.radar.fingerprint.PlatformTextHint
 import com.lucastrevvos.kmonemotor.radar.vision.CropKind
 import kotlin.math.min
 
@@ -42,15 +43,46 @@ class AutomaticCaptureBurstPolicy(
         if (containsStrongOfferSignal(input.rawOcrText)) {
             return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "strong_offer_signal_present")
         }
+        if (looksLikeMapOrHomeContamination(input.rawOcrText)) {
+            return AutomaticCaptureBurstDecision(
+                shouldScheduleBurst = true,
+                delayMs = min(config.delayMs, config.maxDelayMs),
+                preferredCropOrder = preferredCropOrder(input.triggerSource),
+                reason = "map_home_contamination"
+            )
+        }
+        if (
+            input.fingerprintKind == OfferTextFingerprintKind.UNKNOWN &&
+            (input.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC ||
+                input.triggerSource == TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC) &&
+            (input.cropKind == CropKind.CENTER_CARD_AREA || input.cropKind == CropKind.LOWER_HALF) &&
+            hasProbableOfferContext(input.rawOcrText, input.platformHint, input.triggerSource)
+        ) {
+            return AutomaticCaptureBurstDecision(
+                shouldScheduleBurst = true,
+                delayMs = min(config.delayMs, config.maxDelayMs),
+                preferredCropOrder = preferredCropOrder(input.triggerSource),
+                reason = "unknown_probable_offer_context"
+            )
+        }
+        if (
+            input.fingerprintKind == OfferTextFingerprintKind.NON_OFFER &&
+            input.triggerSource == TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC &&
+            (input.cropKind == CropKind.CENTER_CARD_AREA || input.cropKind == CropKind.LOWER_HALF) &&
+            !looksLikeFuelOrPromoScreen(input.rawOcrText) &&
+            !looksLikeMapOrHomeContamination(input.rawOcrText)
+        ) {
+            return AutomaticCaptureBurstDecision(
+                shouldScheduleBurst = true,
+                delayMs = min(config.delayMs, config.maxDelayMs),
+                preferredCropOrder = preferredCropOrder(input.triggerSource),
+                reason = "non_offer_probable_offer_context"
+            )
+        }
         if (!looksLikeMapOrHomeContamination(input.rawOcrText)) {
             return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "not_map_home_contamination")
         }
-        return AutomaticCaptureBurstDecision(
-            shouldScheduleBurst = true,
-            delayMs = min(config.delayMs, config.maxDelayMs),
-            preferredCropOrder = preferredCropOrder(input.triggerSource),
-            reason = "map_home_contamination"
-        )
+        return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "not_map_home_contamination")
     }
 
     fun looksLikeMapOrHomeContamination(rawText: String): Boolean {
@@ -68,20 +100,38 @@ class AutomaticCaptureBurstPolicy(
         return OFFER_PATTERNS.any { it.containsMatchIn(normalized) }
     }
 
+    private fun hasProbableOfferContext(
+        rawText: String,
+        platformHint: PlatformTextHint?,
+        triggerSource: TriggerSource
+    ): Boolean {
+        if (platformHint == PlatformTextHint.UBER || platformHint == PlatformTextHint.NINETY_NINE) {
+            return true
+        }
+        if (triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC ||
+            triggerSource == TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC
+        ) {
+            if (rawText.isBlank()) return true
+            val normalized = rawText.lowercase()
+            return PROBABLE_OFFER_CONTEXT_PATTERNS.any { it.containsMatchIn(normalized) }
+        }
+        return false
+    }
+
     private fun preferredCropOrder(triggerSource: TriggerSource): List<CropKind> {
         return when (triggerSource) {
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC -> listOf(
                 CropKind.LOWER_HALF,
-                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
-                CropKind.FLOATING_BOUNDS_EXPANDED,
-                CropKind.CENTER_CARD_AREA
+                CropKind.CENTER_CARD_AREA,
+                CropKind.LOWER_THIRD,
+                CropKind.FLOATING_BOUNDS_EXPANDED
             )
 
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> listOf(
                 CropKind.LOWER_HALF,
                 CropKind.CENTER_CARD_AREA,
-                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
+                CropKind.LOWER_THIRD,
                 CropKind.FLOATING_BOUNDS_EXPANDED
             )
 
@@ -136,6 +186,16 @@ class AutomaticCaptureBurstPolicy(
             Regex("gasolina"),
             Regex("etanol"),
             Regex("\\blitro\\b")
+        )
+
+        val PROBABLE_OFFER_CONTEXT_PATTERNS = listOf(
+            Regex("\\buber\\b|\\buberx\\b"),
+            Regex("\\b99\\b"),
+            Regex("r\\$"),
+            Regex("\\bmin\\b|minutos"),
+            Regex("\\bkm\\b"),
+            Regex("priority|premium"),
+            Regex("dinheiro|pagamento no app|taxa de deslocamento")
         )
     }
 }

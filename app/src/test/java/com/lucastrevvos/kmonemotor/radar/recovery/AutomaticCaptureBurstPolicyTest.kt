@@ -52,6 +52,43 @@ class AutomaticCaptureBurstPolicyTest {
     }
 
     @Test
+    fun unknownUberDominantCenterCardWithProbableOfferContext_schedulesFallbackBurst() {
+        val decision = policy.evaluate(
+            input(
+                rawText = "",
+                fingerprintKind = OfferTextFingerprintKind.UNKNOWN,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                platformHint = PlatformTextHint.UNKNOWN,
+                cropKind = CropKind.CENTER_CARD_AREA
+            ),
+            nowMs = 2_000L
+        )
+
+        assertTrue(decision.shouldScheduleBurst)
+        assertEquals("unknown_probable_offer_context", decision.reason)
+        assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+    }
+
+    @Test
+    fun unknownFloatingOver99WithLowerHalf_schedulesFallbackBurst() {
+        val decision = policy.evaluate(
+            input(
+                rawText = "",
+                fingerprintKind = OfferTextFingerprintKind.UNKNOWN,
+                triggerSource = TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
+                platformHint = PlatformTextHint.UNKNOWN,
+                cropKind = CropKind.LOWER_HALF
+            ),
+            nowMs = 2_000L
+        )
+
+        assertTrue(decision.shouldScheduleBurst)
+        assertEquals("unknown_probable_offer_context", decision.reason)
+        assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+        assertEquals(CropKind.CENTER_CARD_AREA, decision.preferredCropOrder[1])
+    }
+
+    @Test
     fun unknownWithStrongOfferSignal_doesNotScheduleBurst() {
         val decision = policy.evaluate(
             input("UberX R$ 7,79 5 min (1,4 km)", OfferTextFingerprintKind.UNKNOWN),
@@ -86,6 +123,40 @@ class AutomaticCaptureBurstPolicyTest {
         )
 
         assertTrue(decision.shouldScheduleBurst)
+    }
+
+    @Test
+    fun nonOfferWithMapHomeText_stillSchedulesBurstRecovery() {
+        val decision = policy.evaluate(
+            input(
+                rawText = "Canajure SC-401 buscando 1-7 min",
+                fingerprintKind = OfferTextFingerprintKind.NON_OFFER,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC
+            ),
+            nowMs = 2_000L
+        )
+
+        assertTrue(decision.shouldScheduleBurst)
+        assertEquals("map_home_contamination", decision.reason)
+        assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+    }
+
+    @Test
+    fun nonOfferFloatingOver99WithoutFuelPromoOrHome_stillSchedulesBurstRecovery() {
+        val decision = policy.evaluate(
+            input(
+                rawText = "texto fraco de card escuro",
+                fingerprintKind = OfferTextFingerprintKind.NON_OFFER,
+                triggerSource = TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
+                platformHint = PlatformTextHint.UNKNOWN,
+                cropKind = CropKind.CENTER_CARD_AREA
+            ),
+            nowMs = 2_000L
+        )
+
+        assertTrue(decision.shouldScheduleBurst)
+        assertEquals("non_offer_probable_offer_context", decision.reason)
+        assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
     }
 
     @Test
@@ -189,15 +260,17 @@ class AutomaticCaptureBurstPolicyTest {
         triggerSource: TriggerSource = TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
         attempt: Int = 0,
         captureStartedAtMs: Long = 500L,
+        platformHint: PlatformTextHint = PlatformTextHint.UBER,
+        cropKind: CropKind = CropKind.CENTER_CARD_AREA,
         obstructionSuspected: Boolean = false,
         obstructionOverlapsCriticalArea: Boolean = false
     ) = AutomaticCaptureBurstInput(
         observationId = "obs",
         triggerSource = triggerSource,
-        cropKind = CropKind.CENTER_CARD_AREA,
+        cropKind = cropKind,
         rawOcrText = rawText,
         fingerprintKind = fingerprintKind,
-        platformHint = PlatformTextHint.UBER,
+        platformHint = platformHint,
         createdAtMs = captureStartedAtMs,
         captureStartedAtMs = captureStartedAtMs,
         attempt = attempt,

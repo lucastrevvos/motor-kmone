@@ -44,6 +44,7 @@ class SeenOfferMapperTest {
         assertEquals(1.2, seenOffer?.pickupDistanceKm)
         assertEquals(4.8, seenOffer?.tripDistanceKm)
         assertEquals(6.0, seenOffer?.totalDistanceKm)
+        assertEquals(12.5 / 6.0, seenOffer?.valuePerKm ?: 0.0, 0.01)
         assertTrue(seenOffer?.originPreview?.contains("Avenida dos Merlins") == true)
         assertTrue(seenOffer?.destinationPreview?.contains("Rua X") == true)
     }

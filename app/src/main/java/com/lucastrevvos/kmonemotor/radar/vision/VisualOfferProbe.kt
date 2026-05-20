@@ -35,6 +35,15 @@ class VisualOfferProbe(
             "observationId" to observation.id,
             "count" to candidates.size
         )
+        if (!observation.isManual) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_CAPTURE_CROP_CANDIDATES",
+                "observationId" to observation.id,
+                "triggerSource" to observation.triggerSource,
+                "candidateCropKinds" to candidates.joinToString(",") { it.kind.name }
+            )
+        }
         candidates.forEach { candidate ->
             RadarLogger.d(
                 "KM_V2_VISION",
@@ -61,6 +70,22 @@ class VisualOfferProbe(
                 "offerLikeScore" to result.offerLikeScore,
                 "rejectionReason" to result.rejectionReason
             )
+            if (!observation.isManual) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_CAPTURE_CROP_SCORE",
+                    "observationId" to observation.id,
+                    "cropKind" to result.cropKind,
+                    "visionScore" to result.offerLikeScore,
+                    "ocrSignalScore" to result.edgeDensityHint,
+                    "fingerprintKind" to "PENDING",
+                    "offerLikeScore" to result.offerLikeScore,
+                    "nonOfferScore" to 0,
+                    "priceCount" to 0,
+                    "distanceCount" to 0,
+                    "timeCount" to 0
+                )
+            }
             result
         }
         val rankingDecision = rankCandidates(observation, candidates, probeResults)
@@ -232,6 +257,15 @@ class VisualOfferProbe(
             "selectedByRule" to selectedByRule,
             "reason" to reason
         )
+        if (!observation.isManual) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_CAPTURE_SELECTED_CROP",
+                "observationId" to observation.id,
+                "selectedCropKind" to finalSelected?.kind,
+                "reason" to reason
+            )
+        }
 
         return RankingDecision(
             bestCandidate = finalSelected?.candidate,

@@ -32,36 +32,6 @@ class SeenOfferSanitizer {
             if (it != adjusted) warnings += "product_name_normalized"
         }
 
-        val price = adjusted.price
-        if (price != null && price > MAX_ALLOWED_PRICE_BRL) {
-            return SeenOfferSanitizationResult(
-                shouldPersist = false,
-                sanitizedOffer = null,
-                reason = "suspicious_price_too_high",
-                warnings = warnings
-            )
-        }
-
-        val tripTime = adjusted.tripTimeMin
-        val tripDistance = adjusted.tripDistanceKm
-        val totalDistance = adjusted.totalDistanceKm
-        if (tripTime != null && tripDistance != null && tripTime <= 30.0 && tripDistance > 100.0) {
-            return SeenOfferSanitizationResult(
-                shouldPersist = false,
-                sanitizedOffer = null,
-                reason = "suspicious_distance_time_mismatch",
-                warnings = warnings
-            )
-        }
-        if (totalDistance != null && totalDistance > 150.0 && (price ?: 0.0) < 100.0) {
-            return SeenOfferSanitizationResult(
-                shouldPersist = false,
-                sanitizedOffer = null,
-                reason = "suspicious_distance_time_mismatch",
-                warnings = warnings
-            )
-        }
-
         return SeenOfferSanitizationResult(
             shouldPersist = true,
             sanitizedOffer = adjusted,
@@ -86,10 +56,6 @@ class SeenOfferSanitizer {
     private fun SeenOffer.normalizeProductName(): SeenOffer {
         val normalized = productName?.takeUnless { SeenOfferSanitizationRules.isBadProductName(it) }
         return if (normalized == productName) this else copy(productName = normalized)
-    }
-
-    companion object {
-        private const val MAX_ALLOWED_PRICE_BRL = 300.0
     }
 }
 

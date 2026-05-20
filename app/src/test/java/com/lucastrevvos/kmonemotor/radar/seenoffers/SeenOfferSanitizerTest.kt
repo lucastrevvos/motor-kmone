@@ -24,7 +24,7 @@ class SeenOfferSanitizerTest {
     }
 
     @Test
-    fun suspiciousHighPrice_isRejected() {
+    fun suspiciousHighPrice_isLeftForAuditor() {
         val result = sanitizer.sanitize(
             offer(
                 price = 479.0,
@@ -32,12 +32,11 @@ class SeenOfferSanitizerTest {
             )
         )
 
-        assertFalse(result.shouldPersist)
-        assertEquals("suspicious_price_too_high", result.reason)
+        assertTrue(result.shouldPersist)
     }
 
     @Test
-    fun suspiciousDistanceMismatch_isRejected() {
+    fun suspiciousDistanceMismatch_isLeftForAuditor() {
         val result = sanitizer.sanitize(
             offer(
                 price = 11.3,
@@ -47,8 +46,7 @@ class SeenOfferSanitizerTest {
             )
         )
 
-        assertFalse(result.shouldPersist)
-        assertEquals("suspicious_distance_time_mismatch", result.reason)
+        assertTrue(result.shouldPersist)
     }
 
     @Test

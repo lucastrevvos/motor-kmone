@@ -4,6 +4,7 @@ interface SeenOfferRepository {
     fun saveSeenOffer(offer: SeenOffer): SeenOfferSaveResult
     fun listSeenOffers(limit: Int = 100): List<SeenOffer>
     fun getSeenOfferById(id: String): SeenOffer?
+    fun updateSeenOffer(offer: SeenOffer): SeenOffer?
     fun updateSeenOfferStatus(id: String, status: SeenOfferStatus): SeenOffer?
 }
 

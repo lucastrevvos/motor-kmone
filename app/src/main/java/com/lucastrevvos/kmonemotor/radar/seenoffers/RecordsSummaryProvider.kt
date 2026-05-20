@@ -80,12 +80,11 @@ class RecordsSummaryProvider(
     }
 
     private fun rideDistanceKm(ride: SavedRide): Double? {
-        return ride.totalDistanceKm
-            ?: when {
-                ride.pickupDistanceKm != null && ride.tripDistanceKm != null -> ride.pickupDistanceKm + ride.tripDistanceKm
-                ride.tripDistanceKm != null -> ride.tripDistanceKm
-                else -> null
-            }
+        return RideEconomicsCalculator.resolveTotalDistanceKm(
+            totalDistanceKm = ride.totalDistanceKm,
+            pickupDistanceKm = ride.pickupDistanceKm,
+            tripDistanceKm = ride.tripDistanceKm
+        )
     }
 
     private fun Long.isInside(
