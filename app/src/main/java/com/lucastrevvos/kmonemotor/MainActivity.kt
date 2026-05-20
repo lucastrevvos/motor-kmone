@@ -69,6 +69,8 @@ import com.lucastrevvos.kmonemotor.radar.core.ManualAnalysisRequestBus
 import com.lucastrevvos.kmonemotor.radar.core.OperationalAppState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugStore
+import com.lucastrevvos.kmonemotor.radar.debug.DebugExportResult
+import com.lucastrevvos.kmonemotor.radar.debug.DebugLogExporter
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
 import com.lucastrevvos.kmonemotor.radar.seenoffers.DriverSettings
@@ -192,6 +194,8 @@ private fun KmOneApp(debugState: RadarDebugState) {
     var ridesError by remember { mutableStateOf<String?>(null) }
     var homeState by remember { mutableStateOf(HomeUiState(isLoading = true)) }
     var driverSettings by remember { mutableStateOf(DriverSettings()) }
+    var debugExporting by remember { mutableStateOf(false) }
+    var debugExportMessage by remember { mutableStateOf<String?>(null) }
 
     suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
@@ -527,6 +531,8 @@ private fun KmOneApp(debugState: RadarDebugState) {
                 AppTab.CONFIG -> ConfigTab(
                     debugState = debugState,
                     settings = driverSettings,
+                    isExportingLogs = debugExporting,
+                    exportMessage = debugExportMessage,
                     onSaveDailyGoal = { dailyGoal ->
                         coroutineScope.launch {
                             withContext(Dispatchers.IO) {
@@ -538,6 +544,44 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                 "dailyGoalBrl" to dailyGoal
                             )
                             refreshAll()
+                        }
+                    },
+                    onExportDebugLogs = {
+                        coroutineScope.launch {
+                            debugExporting = true
+                            debugExportMessage = null
+                            val result = withContext(Dispatchers.IO) {
+                                DebugLogExporter(context).export()
+                            }
+                            debugExporting = false
+                            when (result) {
+                                is DebugExportResult.Success -> {
+                                    debugExportMessage = "Pacote gerado com ${result.filesCount} arquivos."
+                                    runCatching {
+                                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "application/zip"
+                                            putExtra(Intent.EXTRA_STREAM, result.uri)
+                                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        }
+                                        context.startActivity(
+                                            Intent.createChooser(shareIntent, "Exportar logs de debug").apply {
+                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            }
+                                        )
+                                    }.onFailure { error ->
+                                        debugExportMessage = "Pacote salvo em ${result.file.absolutePath}"
+                                        RadarLogger.w(
+                                            "KM_V2_DEBUG",
+                                            "KM_V2_DEBUG_EXPORT_FAILED",
+                                            "reason" to "share_sheet_failed",
+                                            "error" to error.message
+                                        )
+                                    }
+                                }
+                                is DebugExportResult.Failure -> {
+                                    debugExportMessage = result.reason
+                                }
+                            }
                         }
                     }
                 )
@@ -1183,7 +1227,10 @@ private fun RecordsTab(
 private fun ConfigTab(
     debugState: RadarDebugState,
     settings: DriverSettings,
-    onSaveDailyGoal: (Double) -> Unit
+    isExportingLogs: Boolean,
+    exportMessage: String?,
+    onSaveDailyGoal: (Double) -> Unit,
+    onExportDebugLogs: () -> Unit
 ) {
     var dailyGoalText by remember(settings.dailyGoalBrl) {
         mutableStateOf(settings.dailyGoalBrl?.let(::formatNumberInput) ?: "")
@@ -1221,6 +1268,46 @@ private fun ConfigTab(
                     )
                 ) {
                     Text("Salvar meta")
+                }
+            }
+        }
+        CockpitCard(title = "Diagnostico", accent = KmOnePalette.ElectricBlue) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Gera um pacote com logs e arquivos recentes para analise no PC.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KmOnePalette.TextSecondary
+                )
+                Text(
+                    text = "O pacote pode conter prints, textos OCR, rotas e informacoes de corridas usadas apenas para debug.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+                Button(
+                    onClick = onExportDebugLogs,
+                    enabled = !isExportingLogs,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.ElectricBlue,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    if (isExportingLogs) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = KmOnePalette.BackgroundDeep
+                        )
+                    } else {
+                        Text("Exportar logs")
+                    }
+                }
+                exportMessage?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
                 }
             }
         }

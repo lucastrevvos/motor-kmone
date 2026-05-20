@@ -8,6 +8,7 @@ import kotlin.system.exitProcess
 class KmRadarApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        RadarLogger.initialize(this)
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             RadarLogger.w(

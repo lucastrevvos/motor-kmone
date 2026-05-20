@@ -1,8 +1,13 @@
 package com.lucastrevvos.kmonemotor.radar.debug
 
+import android.content.Context
 import android.util.Log
 
 object RadarLogger {
+    fun initialize(context: Context) {
+        DebugEventLogStore.initialize(context.applicationContext)
+    }
+
     fun d(area: String, event: String, vararg keyValues: Pair<String, Any?>) {
         write(level = "D", area = area, message = buildMessage(event, keyValues))
     }
@@ -25,6 +30,7 @@ object RadarLogger {
         } catch (_: RuntimeException) {
             println("$level/$area: $message")
         }
+        DebugEventLogStore.append(level = level, area = area, message = message)
     }
 
     private fun buildMessage(event: String, keyValues: Array<out Pair<String, Any?>>): String {
