@@ -88,23 +88,60 @@ class HomeDailySummaryProviderTest {
         assertEquals(20.0, summary.earnedToday, 0.001)
     }
 
+    @Test
+    fun configuredGoal_takesPrecedenceOverFallback() {
+        val provider = HomeDailySummaryProvider(
+            seenOfferRepository = emptySeenRepo(),
+            savedRideRepository = emptyRideRepo(),
+            configuredDailyGoalProvider = { 240.0 },
+            fallbackDailyGoalProvider = { 150.0 },
+            zoneIdProvider = { ZoneId.of("America/Sao_Paulo") }
+        )
+
+        val summary = provider.summarize(emptyList(), emptyList(), nowMs)
+
+        assertEquals(240.0, summary.dailyGoal ?: 0.0, 0.001)
+        assertEquals(HomeGoalSource.CONFIGURED, summary.goalSource)
+    }
+
+    @Test
+    fun fallbackGoal_isUsedWhenConfiguredMissing() {
+        val provider = HomeDailySummaryProvider(
+            seenOfferRepository = emptySeenRepo(),
+            savedRideRepository = emptyRideRepo(),
+            configuredDailyGoalProvider = { null },
+            fallbackDailyGoalProvider = { 150.0 },
+            zoneIdProvider = { ZoneId.of("America/Sao_Paulo") }
+        )
+
+        val summary = provider.summarize(emptyList(), emptyList(), nowMs)
+
+        assertEquals(150.0, summary.dailyGoal ?: 0.0, 0.001)
+        assertEquals(HomeGoalSource.FALLBACK, summary.goalSource)
+    }
+
     private fun provider(goal: Double?): HomeDailySummaryProvider {
         return HomeDailySummaryProvider(
-            seenOfferRepository = object : SeenOfferRepository {
-                override fun saveSeenOffer(offer: SeenOffer) = throw UnsupportedOperationException()
-                override fun listSeenOffers(limit: Int) = emptyList<SeenOffer>()
-                override fun getSeenOfferById(id: String) = null
-                override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus) = null
-            },
-            savedRideRepository = object : SavedRideRepository {
-                override fun saveRide(ride: SavedRide) = throw UnsupportedOperationException()
-                override fun listSavedRides(limit: Int) = emptyList<SavedRide>()
-                override fun deleteRide(id: String) = throw UnsupportedOperationException()
-            },
+            seenOfferRepository = emptySeenRepo(),
+            savedRideRepository = emptyRideRepo(),
             configuredDailyGoalProvider = { goal },
             fallbackDailyGoalProvider = { null },
             zoneIdProvider = { ZoneId.of("America/Sao_Paulo") }
         )
+    }
+
+    private fun emptySeenRepo() = object : SeenOfferRepository {
+        override fun saveSeenOffer(offer: SeenOffer) = throw UnsupportedOperationException()
+        override fun listSeenOffers(limit: Int) = emptyList<SeenOffer>()
+        override fun getSeenOfferById(id: String) = null
+        override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus) = null
+    }
+
+    private fun emptyRideRepo() = object : SavedRideRepository {
+        override fun saveRide(ride: SavedRide) = throw UnsupportedOperationException()
+        override fun listSavedRides(limit: Int) = emptyList<SavedRide>()
+        override fun updateRide(ride: SavedRide) = throw UnsupportedOperationException()
+        override fun deleteRide(id: String) = throw UnsupportedOperationException()
     }
 
     private fun seenOffer(id: String, createdAtMs: Long) = SeenOffer(

@@ -15,11 +15,13 @@ data class RecordsSummary(
     val totalEarned: Double,
     val ridesCount: Int,
     val totalKm: Double?,
-    val averageValuePerKm: Double?
+    val averageValuePerKm: Double?,
+    val fuelSpentAmount: Double?
 )
 
 class RecordsSummaryProvider(
     private val savedRideRepository: SavedRideRepository,
+    private val fuelEntriesProvider: () -> List<FuelEntry> = { emptyList() },
     private val zoneIdProvider: () -> ZoneId = { ZoneId.systemDefault() }
 ) {
     fun loadSummary(
@@ -28,6 +30,7 @@ class RecordsSummaryProvider(
     ): RecordsSummary {
         return summarize(
             rides = savedRideRepository.listSavedRides(limit = 500),
+            fuelEntries = fuelEntriesProvider(),
             period = period,
             nowMs = nowMs
         )
@@ -35,11 +38,13 @@ class RecordsSummaryProvider(
 
     fun summarize(
         rides: List<SavedRide>,
+        fuelEntries: List<FuelEntry> = emptyList(),
         period: RecordsPeriodFilter,
         nowMs: Long = System.currentTimeMillis()
     ): RecordsSummary {
         val zoneId = zoneIdProvider()
         val filtered = rides.filter { it.acceptedAtMs.isInside(period, nowMs, zoneId) }
+        val filteredFuelEntries = fuelEntries.filter { it.createdAtMs.isInside(period, nowMs, zoneId) }
         val totalEarned = filtered.mapNotNull { it.price }.sum()
         val totalKm = filtered.mapNotNull(::rideDistanceKm)
             .takeIf { it.isNotEmpty() }
@@ -49,7 +54,8 @@ class RecordsSummaryProvider(
             totalEarned = totalEarned,
             ridesCount = filtered.size,
             totalKm = totalKm,
-            averageValuePerKm = if (totalKm != null && totalKm > 0.0) totalEarned / totalKm else null
+            averageValuePerKm = if (totalKm != null && totalKm > 0.0) totalEarned / totalKm else null,
+            fuelSpentAmount = filteredFuelEntries.sumOf { it.amountBrl }
         )
     }
 

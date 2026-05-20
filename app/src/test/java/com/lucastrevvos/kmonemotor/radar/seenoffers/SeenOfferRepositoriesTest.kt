@@ -98,12 +98,69 @@ class SeenOfferRepositoriesTest {
         assertTrue(rideRepo.listSavedRides().isEmpty())
     }
 
+    @Test
+    fun updateRide_updatesExistingRideWithoutDuplicating() {
+        val rideRepo = savedRideRepository()
+        val original = savedRide(id = "ride-1")
+        rideRepo.saveRide(original)
+
+        val updated = rideRepo.updateRide(
+            original.copy(
+                price = 19.9,
+                originPreview = "Nova origem"
+            )
+        )
+
+        assertNotNull(updated)
+        assertEquals(1, rideRepo.listSavedRides().size)
+        assertEquals(19.9, rideRepo.listSavedRides().first().price ?: 0.0, 0.0)
+        assertEquals("Nova origem", rideRepo.listSavedRides().first().originPreview)
+    }
+
+    @Test
+    fun fuelEntryRepository_savesAndListsEntries() {
+        val repo = fuelEntryRepository()
+
+        repo.saveFuelEntry(
+            FuelEntry(
+                id = "fuel-1",
+                amountBrl = 100.0,
+                liters = 20.0,
+                fuelType = "Gasolina",
+                createdAtMs = 1_000L,
+                note = "posto"
+            )
+        )
+
+        assertEquals(1, repo.listFuelEntries().size)
+        assertEquals(100.0, repo.listFuelEntries().first().amountBrl, 0.0)
+    }
+
+    @Test
+    fun driverSettingsRepository_persistsDailyGoal() {
+        val repo = driverSettingsRepository()
+
+        assertEquals(null, repo.getSettings().dailyGoalBrl)
+
+        repo.updateDailyGoal(220.0)
+
+        assertEquals(220.0, repo.getSettings().dailyGoalBrl ?: 0.0, 0.0)
+    }
+
     private fun seenOfferRepository(): FileSeenOfferRepository {
         return FileSeenOfferRepository(File(createTempDir(), "seen_offers.json"))
     }
 
     private fun savedRideRepository(): FileSavedRideRepository {
         return FileSavedRideRepository(File(createTempDir(), "saved_rides.json"))
+    }
+
+    private fun fuelEntryRepository(): FileFuelEntryRepository {
+        return FileFuelEntryRepository(File(createTempDir(), "fuel_entries.json"))
+    }
+
+    private fun driverSettingsRepository(): FileDriverSettingsRepository {
+        return FileDriverSettingsRepository(File(createTempDir(), "driver_settings.txt"))
     }
 
     private fun savedRide(id: String) = SavedRide(

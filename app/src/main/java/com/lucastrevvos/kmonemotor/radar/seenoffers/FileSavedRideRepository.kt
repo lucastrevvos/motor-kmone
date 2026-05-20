@@ -19,6 +19,17 @@ class FileSavedRideRepository(
         loadRides().sortedByDescending { it.createdAtMs }.take(limit)
     }
 
+    override fun updateRide(ride: SavedRide): SavedRide? = synchronized(lock) {
+        val rides = loadRides().toMutableList()
+        val index = rides.indexOfFirst { it.id == ride.id }
+        if (index == -1) {
+            return null
+        }
+        rides[index] = ride
+        persistRides(rides)
+        ride
+    }
+
     override fun deleteRide(id: String): Boolean = synchronized(lock) {
         val rides = loadRides()
         val filtered = rides.filterNot { it.id == id }

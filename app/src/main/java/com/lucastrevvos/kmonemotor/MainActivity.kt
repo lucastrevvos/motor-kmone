@@ -35,8 +35,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -68,6 +71,8 @@ import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugStore
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
+import com.lucastrevvos.kmonemotor.radar.seenoffers.DriverSettings
+import com.lucastrevvos.kmonemotor.radar.seenoffers.FuelEntry
 import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeDailySummary
 import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeDailySummaryProvider
 import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeGoalSource
@@ -149,12 +154,14 @@ private fun KmOneApp(debugState: RadarDebugState) {
     val homeSummaryProvider = remember {
         HomeDailySummaryProvider(
             seenOfferRepository = module.seenOfferRepository,
-            savedRideRepository = module.savedRideRepository
+            savedRideRepository = module.savedRideRepository,
+            configuredDailyGoalProvider = { module.driverSettingsRepository.getSettings().dailyGoalBrl }
         )
     }
     val recordsSummaryProvider = remember {
         RecordsSummaryProvider(
-            savedRideRepository = module.savedRideRepository
+            savedRideRepository = module.savedRideRepository,
+            fuelEntriesProvider = { module.fuelEntryRepository.listFuelEntries(limit = 500) }
         )
     }
     val overlayController = remember { PiuOverlayRuntime.get(context) }
@@ -165,6 +172,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
     var ridesLoading by remember { mutableStateOf(true) }
     var ridesError by remember { mutableStateOf<String?>(null) }
     var homeState by remember { mutableStateOf(HomeUiState(isLoading = true)) }
+    var driverSettings by remember { mutableStateOf(DriverSettings()) }
 
     suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
@@ -200,9 +208,18 @@ private fun KmOneApp(debugState: RadarDebugState) {
         }
     }
 
+    suspend fun reloadDriverSettings(): DriverSettings {
+        return withContext(Dispatchers.IO) {
+            module.driverSettingsRepository.getSettings()
+        }.also {
+            driverSettings = it
+        }
+    }
+
     fun refreshAll() {
         coroutineScope.launch {
             homeState = homeState.copy(isLoading = true, errorMessage = null)
+            reloadDriverSettings()
             val offers = reloadSeenOffers()
             val rides = reloadSavedRides()
             val summary = homeSummaryProvider.summarize(
@@ -367,12 +384,43 @@ private fun KmOneApp(debugState: RadarDebugState) {
                     error = ridesError,
                     recordsSummaryProvider = recordsSummaryProvider,
                     onRefresh = { refreshAll() },
-                    onEditRide = { savedRideId ->
+                    onCreateFuelEntry = { fuelEntry ->
+                        coroutineScope.launch {
+                            withContext(Dispatchers.IO) {
+                                module.fuelEntryRepository.saveFuelEntry(fuelEntry)
+                            }
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_FUEL_ENTRY_CREATED",
+                                "fuelEntryId" to fuelEntry.id,
+                                "amountBrl" to fuelEntry.amountBrl,
+                                "liters" to fuelEntry.liters,
+                                "fuelType" to fuelEntry.fuelType
+                            )
+                            refreshAll()
+                        }
+                    },
+                    onSaveEditedRide = { updatedRide ->
                         RadarLogger.i(
                             "KM_V2_SEEN",
-                            "KM_V2_SAVED_RIDE_EDIT_REQUESTED",
-                            "savedRideId" to savedRideId
+                            "KM_V2_SAVED_RIDE_EDIT_SAVED",
+                            "savedRideId" to updatedRide.id,
+                            "price" to updatedRide.price,
+                            "totalDistanceKm" to updatedRide.totalDistanceKm,
+                            "valuePerKm" to updatedRide.valuePerKm
                         )
+                        coroutineScope.launch {
+                            withContext(Dispatchers.IO) {
+                                module.savedRideRepository.updateRide(updatedRide)
+                            }
+                            val rides = reloadSavedRides()
+                            homeState = homeState.copy(
+                                summary = homeSummaryProvider.summarize(
+                                    seenOffers = seenState.offers,
+                                    savedRides = rides
+                                )
+                            )
+                        }
                     },
                     onDeleteRide = { savedRideId ->
                         coroutineScope.launch {
@@ -402,7 +450,23 @@ private fun KmOneApp(debugState: RadarDebugState) {
                     }
                 )
 
-                AppTab.CONFIG -> ConfigTab(debugState = debugState)
+                AppTab.CONFIG -> ConfigTab(
+                    debugState = debugState,
+                    settings = driverSettings,
+                    onSaveDailyGoal = { dailyGoal ->
+                        coroutineScope.launch {
+                            withContext(Dispatchers.IO) {
+                                module.driverSettingsRepository.updateDailyGoal(dailyGoal)
+                            }
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_DRIVER_SETTINGS_DAILY_GOAL_SAVED",
+                                "dailyGoalBrl" to dailyGoal
+                            )
+                            refreshAll()
+                        }
+                    }
+                )
             }
         }
     }
@@ -714,16 +778,20 @@ private fun RecordsTab(
     error: String?,
     recordsSummaryProvider: RecordsSummaryProvider,
     onRefresh: () -> Unit,
-    onEditRide: (String) -> Unit,
+    onCreateFuelEntry: (FuelEntry) -> Unit,
+    onSaveEditedRide: (SavedRide) -> Unit,
     onDeleteRide: (String) -> Unit
 ) {
     var period by remember { mutableStateOf(RecordsPeriodFilter.DAY) }
     var expandedSavedRideId by remember(rides, period) { mutableStateOf<String?>(null) }
+    var editingRide by remember { mutableStateOf<SavedRide?>(null) }
+    var deleteConfirmationRide by remember { mutableStateOf<SavedRide?>(null) }
+    var showFuelEntryDialog by remember { mutableStateOf(false) }
     val filteredRides = remember(rides, period) {
         recordsSummaryProvider.filterRides(rides, period)
     }
     val summary = remember(rides, period) {
-        recordsSummaryProvider.summarize(rides, period)
+        recordsSummaryProvider.loadSummary(period = period)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -768,6 +836,23 @@ private fun RecordsTab(
                 item {
                     RecordsSummaryCard(summary = summary)
                 }
+                item {
+                    RecordsTopActions(
+                        onAddFuel = {
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_FUEL_ENTRY_CREATE_OPENED"
+                            )
+                            showFuelEntryDialog = true
+                        },
+                        onManualRide = {
+                            RadarLogger.i(
+                                "KM_V2_SEEN",
+                                "KM_V2_MANUAL_RIDE_CREATE_REQUESTED"
+                            )
+                        }
+                    )
+                }
                 if (filteredRides.isEmpty()) {
                     item {
                         EmptyStateCard(
@@ -784,10 +869,21 @@ private fun RecordsTab(
                             onToggleExpanded = {
                                 expandedSavedRideId = if (expandedSavedRideId == ride.id) null else ride.id
                             },
-                            onEdit = { onEditRide(ride.id) },
+                            onEdit = {
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_SAVED_RIDE_EDIT_OPENED",
+                                    "savedRideId" to ride.id
+                                )
+                                editingRide = ride
+                            },
                             onDelete = {
-                                expandedSavedRideId = null
-                                onDeleteRide(ride.id)
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_SAVED_RIDE_DELETE_CONFIRMATION_OPENED",
+                                    "savedRideId" to ride.id
+                                )
+                                deleteConfirmationRide = ride
                             }
                         )
                     }
@@ -795,10 +891,98 @@ private fun RecordsTab(
             }
         }
     }
+
+    if (showFuelEntryDialog) {
+        FuelEntryDialog(
+            onDismiss = {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_FUEL_ENTRY_CREATE_CANCELLED"
+                )
+                showFuelEntryDialog = false
+            },
+            onSave = { fuelEntry ->
+                showFuelEntryDialog = false
+                onCreateFuelEntry(fuelEntry)
+            }
+        )
+    }
+
+    editingRide?.let { ride ->
+        SavedRideEditDialog(
+            ride = ride,
+            onDismiss = {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SAVED_RIDE_EDIT_CANCELLED",
+                    "savedRideId" to ride.id
+                )
+                editingRide = null
+            },
+            onSave = { updatedRide ->
+                editingRide = null
+                expandedSavedRideId = null
+                onSaveEditedRide(updatedRide)
+            }
+        )
+    }
+
+    deleteConfirmationRide?.let { ride ->
+        AlertDialog(
+            onDismissRequest = {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SAVED_RIDE_DELETE_CANCELLED",
+                    "savedRideId" to ride.id
+                )
+                deleteConfirmationRide = null
+            },
+            title = { Text("Excluir este registro?") },
+            text = { Text("Essa acao removera a corrida dos seus registros.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        deleteConfirmationRide = null
+                        expandedSavedRideId = null
+                        onDeleteRide(ride.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.Negative,
+                        contentColor = KmOnePalette.TextPrimary
+                    )
+                ) {
+                    Text("Excluir")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        RadarLogger.i(
+                            "KM_V2_SEEN",
+                            "KM_V2_SAVED_RIDE_DELETE_CANCELLED",
+                            "savedRideId" to ride.id
+                        )
+                        deleteConfirmationRide = null
+                    }
+                ) {
+                    Text("Cancelar")
+                }
+            },
+            containerColor = KmOnePalette.Card
+        )
+    }
 }
 
 @Composable
-private fun ConfigTab(debugState: RadarDebugState) {
+private fun ConfigTab(
+    debugState: RadarDebugState,
+    settings: DriverSettings,
+    onSaveDailyGoal: (Double) -> Unit
+) {
+    var dailyGoalText by remember(settings.dailyGoalBrl) {
+        mutableStateOf(settings.dailyGoalBrl?.let(::formatNumberInput) ?: "")
+    }
+    val dailyGoalValid = isValidPositiveOrBlank(dailyGoalText) && dailyGoalText.isNotBlank()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -810,6 +994,30 @@ private fun ConfigTab(debugState: RadarDebugState) {
             title = "Config.",
             subtitle = "Area tecnica do app, com permissões e sinais atuais."
         )
+        CockpitCard(title = "Metas", accent = KmOnePalette.Neon) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = dailyGoalText,
+                    onValueChange = { dailyGoalText = it },
+                    label = { Text("Meta diaria (R$)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                Button(
+                    onClick = {
+                        parsePositiveOrNull(dailyGoalText)?.let(onSaveDailyGoal)
+                    },
+                    enabled = dailyGoalValid,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.NeonSoft,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    Text("Salvar meta")
+                }
+            }
+        }
         CockpitCard(title = "Servico e overlay") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 DetailLine("Servico", debugState.serviceActive.toString())
@@ -1601,6 +1809,8 @@ private fun RecordsSummaryCard(summary: RecordsSummary) {
                     accent = KmOnePalette.ElectricBlue,
                     valueStyle = MaterialTheme.typography.titleLarge
                 )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MetricPanel(
                     modifier = Modifier.weight(1f),
                     label = "Media",
@@ -1608,7 +1818,43 @@ private fun RecordsSummaryCard(summary: RecordsSummary) {
                     accent = KmOnePalette.Attention,
                     valueStyle = MaterialTheme.typography.titleLarge
                 )
+                MetricPanel(
+                    modifier = Modifier.weight(1f),
+                    label = "Abastecido",
+                    value = summary.fuelSpentAmount?.let(::formatMoney) ?: formatMoney(0.0),
+                    accent = KmOnePalette.Negative,
+                    valueStyle = MaterialTheme.typography.titleLarge
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun RecordsTopActions(
+    onAddFuel: () -> Unit,
+    onManualRide: () -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Button(
+            onClick = onAddFuel,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = KmOnePalette.CardAlt,
+                contentColor = KmOnePalette.Neon
+            )
+        ) {
+            Text("+ Abastecimento")
+        }
+        OutlinedButton(
+            onClick = onManualRide,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
+            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+        ) {
+            Text("Corrida manual")
         }
     }
 }
@@ -1779,6 +2025,226 @@ private fun SavedRideExpandedContent(
             }
         }
     }
+}
+
+@Composable
+private fun SavedRideEditDialog(
+    ride: SavedRide,
+    onDismiss: () -> Unit,
+    onSave: (SavedRide) -> Unit
+) {
+    var priceText by remember(ride.id) { mutableStateOf(ride.price?.toString().orEmpty()) }
+    var productText by remember(ride.id) { mutableStateOf(ride.productName.orEmpty()) }
+    var originText by remember(ride.id) { mutableStateOf(ride.originPreview.orEmpty()) }
+    var destinationText by remember(ride.id) { mutableStateOf(ride.destinationPreview.orEmpty()) }
+    var pickupDistanceText by remember(ride.id) { mutableStateOf(ride.pickupDistanceKm?.toString().orEmpty()) }
+    var pickupTimeText by remember(ride.id) { mutableStateOf(ride.pickupTimeMin?.toString().orEmpty()) }
+    var tripDistanceText by remember(ride.id) { mutableStateOf(ride.tripDistanceKm?.toString().orEmpty()) }
+    var tripTimeText by remember(ride.id) { mutableStateOf(ride.tripTimeMin?.toString().orEmpty()) }
+    var totalDistanceText by remember(ride.id) { mutableStateOf(ride.totalDistanceKm?.toString().orEmpty()) }
+    val draftRide = ride.copy(
+        price = parsePositiveOrNull(priceText),
+        productName = normalizeOptionalText(productText),
+        originPreview = normalizeOptionalText(originText),
+        destinationPreview = normalizeOptionalText(destinationText),
+        pickupDistanceKm = parseNonNegativeOrNull(pickupDistanceText),
+        pickupTimeMin = parseNonNegativeOrNull(pickupTimeText),
+        tripDistanceKm = parseNonNegativeOrNull(tripDistanceText),
+        tripTimeMin = parseNonNegativeOrNull(tripTimeText),
+        totalDistanceKm = parseNonNegativeOrNull(totalDistanceText)
+    )
+    val recalculatedValuePerKm = recalculateValuePerKm(draftRide)
+
+    val validInputs = listOf(
+        isValidPositiveOrBlank(priceText),
+        isValidNonNegativeOrBlank(pickupDistanceText),
+        isValidNonNegativeOrBlank(pickupTimeText),
+        isValidNonNegativeOrBlank(tripDistanceText),
+        isValidNonNegativeOrBlank(tripTimeText),
+        isValidNonNegativeOrBlank(totalDistanceText)
+    ).all { it }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Editar registro") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = priceText,
+                    onValueChange = { priceText = it },
+                    label = { Text("Preco") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = productText,
+                    onValueChange = { productText = it },
+                    label = { Text("Produto") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = originText,
+                    onValueChange = { originText = it },
+                    label = { Text("Origem") },
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = destinationText,
+                    onValueChange = { destinationText = it },
+                    label = { Text("Destino") },
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = pickupDistanceText,
+                    onValueChange = { pickupDistanceText = it },
+                    label = { Text("Distancia de busca (km)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = pickupTimeText,
+                    onValueChange = { pickupTimeText = it },
+                    label = { Text("Tempo de busca (min)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = tripDistanceText,
+                    onValueChange = { tripDistanceText = it },
+                    label = { Text("Distancia da viagem (km)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = tripTimeText,
+                    onValueChange = { tripTimeText = it },
+                    label = { Text("Tempo da viagem (min)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = totalDistanceText,
+                    onValueChange = { totalDistanceText = it },
+                    label = { Text("Distancia total (km)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                DetailLine(
+                    "R$/km calculado",
+                    recalculatedValuePerKm?.let(::formatPerKm) ?: "-"
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        draftRide.copy(
+                            valuePerKm = recalculatedValuePerKm,
+                            updatedAtMs = System.currentTimeMillis()
+                        )
+                    )
+                },
+                enabled = validInputs,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = KmOnePalette.NeonSoft,
+                    contentColor = KmOnePalette.BackgroundDeep
+                )
+            ) {
+                Text("Salvar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        },
+        containerColor = KmOnePalette.Card
+    )
+}
+
+@Composable
+private fun FuelEntryDialog(
+    onDismiss: () -> Unit,
+    onSave: (FuelEntry) -> Unit
+) {
+    var amountText by remember { mutableStateOf("") }
+    var litersText by remember { mutableStateOf("") }
+    var fuelTypeText by remember { mutableStateOf("") }
+    var noteText by remember { mutableStateOf("") }
+    val valid = isValidPositiveOrBlank(amountText) && amountText.isNotBlank() && isValidPositiveOrBlank(litersText)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Adicionar abastecimento") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = amountText,
+                    onValueChange = { amountText = it },
+                    label = { Text("Valor abastecido (R$)") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = litersText,
+                    onValueChange = { litersText = it },
+                    label = { Text("Litros") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = fuelTypeText,
+                    onValueChange = { fuelTypeText = it },
+                    label = { Text("Tipo de combustivel") },
+                    singleLine = true,
+                    colors = lightInputColors()
+                )
+                OutlinedTextField(
+                    value = noteText,
+                    onValueChange = { noteText = it },
+                    label = { Text("Observacao") },
+                    colors = lightInputColors()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        FuelEntry(
+                            id = java.util.UUID.randomUUID().toString(),
+                            amountBrl = parsePositiveOrNull(amountText) ?: 0.0,
+                            liters = parsePositiveOrNull(litersText),
+                            fuelType = normalizeOptionalText(fuelTypeText),
+                            createdAtMs = System.currentTimeMillis(),
+                            note = normalizeOptionalText(noteText)
+                        )
+                    )
+                },
+                enabled = valid,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = KmOnePalette.NeonSoft,
+                    contentColor = KmOnePalette.BackgroundDeep
+                )
+            ) {
+                Text("Salvar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        },
+        containerColor = KmOnePalette.Card
+    )
 }
 
 private fun displaySeenOfferTitle(offer: SeenOffer): String {
@@ -2056,6 +2522,64 @@ private fun savedRideSourceLabel(source: SavedRideSource): String {
     return when (source) {
         SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT -> "Oferta salva"
         SavedRideSource.MANUAL_ENTRY -> "Manual"
+    }
+}
+
+@Composable
+private fun lightInputColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = Color.White,
+    unfocusedContainerColor = Color.White,
+    disabledContainerColor = Color.White,
+    focusedTextColor = Color(0xFF111111),
+    unfocusedTextColor = Color(0xFF111111),
+    cursorColor = Color(0xFF111111),
+    focusedLabelColor = Color(0xFF333333),
+    unfocusedLabelColor = Color(0xFF444444),
+    focusedBorderColor = KmOnePalette.ElectricBlue,
+    unfocusedBorderColor = Color(0xFFB9C4D0)
+)
+
+private fun isValidPositiveOrBlank(value: String): Boolean {
+    if (value.isBlank()) return true
+    return parseLocalizedDouble(value)?.let { it > 0.0 } == true
+}
+
+private fun isValidNonNegativeOrBlank(value: String): Boolean {
+    if (value.isBlank()) return true
+    return parseLocalizedDouble(value)?.let { it >= 0.0 } == true
+}
+
+private fun parsePositiveOrNull(value: String): Double? {
+    return value.trim().takeIf { it.isNotEmpty() }?.let(::parseLocalizedDouble)?.takeIf { it > 0.0 }
+}
+
+private fun parseNonNegativeOrNull(value: String): Double? {
+    return value.trim().takeIf { it.isNotEmpty() }?.let(::parseLocalizedDouble)?.takeIf { it >= 0.0 }
+}
+
+private fun normalizeOptionalText(value: String): String? {
+    return value.trim().takeIf { it.isNotEmpty() }
+}
+
+private fun parseLocalizedDouble(value: String): Double? {
+    return value.trim().replace(",", ".").toDoubleOrNull()
+}
+
+private fun formatNumberInput(value: Double): String {
+    return String.format(Locale.US, "%.2f", value).replace(".", ",")
+}
+
+private fun recalculateValuePerKm(ride: SavedRide): Double? {
+    val totalKm = ride.totalDistanceKm
+        ?: when {
+            ride.pickupDistanceKm != null && ride.tripDistanceKm != null -> ride.pickupDistanceKm + ride.tripDistanceKm
+            ride.tripDistanceKm != null -> ride.tripDistanceKm
+            else -> null
+        }
+    return if (ride.price != null && totalKm != null && totalKm > 0.0) {
+        ride.price / totalKm
+    } else {
+        null
     }
 }
 
