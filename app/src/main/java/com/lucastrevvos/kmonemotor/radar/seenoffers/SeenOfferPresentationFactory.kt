@@ -13,31 +13,40 @@ class SeenOfferPresentationFactory(
         seenOffer: SeenOffer,
         createdAtMs: Long
     ): DecisionPresentation {
-        val resolvedKm = RideEconomicsCalculator.resolveTotalDistanceKm(
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = seenOffer.platform,
+            price = seenOffer.price,
+            explicitValuePerKm = seenOffer.valuePerKm,
             totalDistanceKm = seenOffer.totalDistanceKm,
             pickupDistanceKm = seenOffer.pickupDistanceKm,
             tripDistanceKm = seenOffer.tripDistanceKm
         )
-        val valuePerKm = RideEconomicsCalculator.calculateValuePerKm(
-            price = seenOffer.price,
-            totalDistanceKm = seenOffer.totalDistanceKm,
-            pickupDistanceKm = seenOffer.pickupDistanceKm,
-            tripDistanceKm = seenOffer.tripDistanceKm
-        ) ?: seenOffer.valuePerKm
+        com.lucastrevvos.kmonemotor.radar.debug.RadarLogger.i(
+            "KM_V2_SEEN",
+            "KM_V2_SAVED_OFFER_ECONOMICS_RESOLVED",
+            "observationId" to seenOffer.observationId,
+            "platform" to seenOffer.platform,
+            "price" to seenOffer.price,
+            "pickupDistanceKm" to resolved.pickupDistanceKm,
+            "tripDistanceKm" to resolved.tripDistanceKm,
+            "totalDistanceKm" to resolved.totalDistanceKm,
+            "valuePerKm" to resolved.valuePerKm,
+            "warnings" to resolved.warnings.joinToString(",")
+        )
         val details = buildList {
-            if (seenOffer.pickupTimeMin != null || seenOffer.pickupDistanceKm != null) {
+            if (seenOffer.pickupTimeMin != null || resolved.pickupDistanceKm != null) {
                 add(
                     "Busca: ${seenOffer.pickupTimeMin?.let(formatter::formatMinutes) ?: "-"} / " +
-                        "${seenOffer.pickupDistanceKm?.let(formatter::formatKm) ?: "-"}"
+                        "${resolved.pickupDistanceKm?.let(formatter::formatKm) ?: "-"}"
                 )
             }
-            if (seenOffer.tripTimeMin != null || seenOffer.tripDistanceKm != null) {
+            if (seenOffer.tripTimeMin != null || resolved.tripDistanceKm != null) {
                 add(
                     "Corrida: ${seenOffer.tripTimeMin?.let(formatter::formatMinutes) ?: "-"} / " +
-                        "${seenOffer.tripDistanceKm?.let(formatter::formatKm) ?: "-"}"
+                        "${resolved.tripDistanceKm?.let(formatter::formatKm) ?: "-"}"
                 )
             }
-            resolvedKm?.let { add("${formatter.formatKm(it)} total") }
+            resolved.totalDistanceKm?.let { add("${formatter.formatKm(it)} total") }
             seenOffer.originPreview?.takeIf { it.isNotBlank() }?.let { add("Origem: $it") }
             seenOffer.destinationPreview?.takeIf { it.isNotBlank() }?.let { add("Destino: $it") }
         }
@@ -48,9 +57,9 @@ class SeenOfferPresentationFactory(
             title = "Oferta ja registrada",
             shortReason = "Reapresentando oferta salva",
             details = details.take(4),
-            primaryMetric = valuePerKm?.let(formatter::formatPerKm)
+            primaryMetric = resolved.valuePerKm?.let(formatter::formatPerKm)
                 ?: seenOffer.price?.let(formatter::formatMoney),
-            secondaryMetric = resolvedKm?.let(formatter::formatKm)?.plus(" total"),
+            secondaryMetric = resolved.totalDistanceKm?.let(formatter::formatKm)?.plus(" total"),
             priceText = seenOffer.price?.let(formatter::formatMoney),
             platformText = when (seenOffer.platform) {
                 RidePlatform.UBER -> "Uber"

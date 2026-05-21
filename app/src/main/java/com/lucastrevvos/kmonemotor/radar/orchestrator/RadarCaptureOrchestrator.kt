@@ -27,6 +27,7 @@ class RadarCaptureOrchestrator(
     private val observationFactory: ScreenObservationFactory = ScreenObservationFactory(),
     private val clock: RadarClock = RadarClock.System,
     private val offerCycleClassifier: OfferCycleClassifier = OfferCycleClassifier(),
+    private val stabilizationScheduler: StabilizationScheduler = DefaultStabilizationScheduler(),
     private val onObservationCreated: ((ScreenObservation, ScreenshotCaptureResult) -> Unit)? = null
 ) {
     private var previousNinetyNineSignature: NodeTreeSignature? = null
@@ -34,6 +35,7 @@ class RadarCaptureOrchestrator(
     private var pendingCaptureRequest: CaptureRequest? = null
     private val finishedCaptureIds = mutableSetOf<String>()
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
+    private var pendingUberOfferCardStabilization: UberOfferCardStabilization? = null
 
     fun debugBusyReason(): String? {
         return when {
@@ -88,6 +90,7 @@ class RadarCaptureOrchestrator(
     }
 
     fun onSignal(signal: RadarSignal) {
+        handleUberOfferCardStabilizationSignal(signal)
         val requestCandidate = toCaptureRequest(signal)
         val evaluation = evaluateSignal(signal, requestCandidate)
         if (evaluation.ignoredReason != null) {
@@ -471,32 +474,42 @@ class RadarCaptureOrchestrator(
         val visibleTextDelta = kotlin.math.abs(
             signal.visibleTextNodeCount - (signal.previousVisibleTextNodeCount ?: 0)
         )
-        val previousSearchingText = signal.previousKnownStateTexts.any {
-            it.contains("procurando corridas", ignoreCase = true)
-        }
-        val currentSearchingText = signal.knownStateTexts.any {
-            it.contains("procurando corridas", ignoreCase = true)
-        }
-        val matchedConditions = buildList {
-            if (signal.previousState == UberReadableState.SEARCHING_RIDES &&
-                signal.currentState != UberReadableState.SEARCHING_RIDES
-            ) {
-                add("searching_state_exit")
-            }
-            if (previousSearchingText && !currentSearchingText) {
-                add("searching_text_disappeared")
-            }
-            if (signal.numericTextNodeCount >= 1 && signal.visibleTextNodeCount >= 2) {
-                add("numeric_text_with_visible_text")
-            }
-            if (signal.buttonLikeNodeCount >= 1 && signal.visibleTextNodeCount >= 2) {
-                add("button_like_with_visible_text")
-            }
-            if (nodeCountDelta >= 8 || visibleTextDelta >= 2) {
-                add("tree_delta_threshold")
-            }
-        }
-        val hasStrongUberDominantSignal = isStrongUberDominantSignal(signal, matchedConditions)
+        val matchedConditions = buildUberDominantMatchedConditions(signal)
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_TREE_DELTA_EVALUATED",
+            "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            "nodeCountDelta" to nodeCountDelta,
+            "visibleTextDelta" to visibleTextDelta,
+            "matchedConditions" to matchedConditions.joinToString(",")
+        )
+        val treeTextSignals = evaluateUberTreeTextSignals(signal)
+        val mapSearchingTreeSignal = hasMapSearchingTreeSignal(signal, treeTextSignals)
+        val offerCardTreeSignal = hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_MAP_SEARCHING_TREE_SIGNAL",
+            "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            "detected" to mapSearchingTreeSignal,
+            "currentState" to signal.currentState,
+            "knownStateTexts" to signal.knownStateTexts.joinToString(",")
+        )
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_OFFER_CARD_TREE_SIGNAL",
+            "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+            "detected" to offerCardTreeSignal,
+            "hasPriceText" to treeTextSignals.hasPriceText,
+            "hasUberProductText" to treeTextSignals.hasUberProductText,
+            "hasRoutePairText" to treeTextSignals.hasRoutePairText,
+            "hasSearchingText" to treeTextSignals.hasSearchingText,
+            "numericTextNodeCount" to signal.numericTextNodeCount,
+            "buttonLikeNodeCount" to signal.buttonLikeNodeCount,
+            "bottomHalfTextNodeCount" to signal.bottomHalfTextNodeCount,
+            "matchedConditions" to matchedConditions.joinToString(","),
+            "rejectionReason" to if (offerCardTreeSignal) null else treeTextSignals.rejectionReason
+        )
+        val hasStrongUberDominantSignal = isStrongUberDominantSignal(signal, matchedConditions, treeTextSignals)
         val systemUiIgnored = hasStrongUberDominantSignal &&
             signal.dominantPackage == RadarConfig.UBER_DRIVER_PACKAGE &&
             signal.nodeTreePackage == RadarConfig.UBER_DRIVER_PACKAGE &&
@@ -532,6 +545,7 @@ class RadarCaptureOrchestrator(
             signal.nodeTreePackage != null && signal.nodeTreePackage != RadarConfig.UBER_DRIVER_PACKAGE -> "node_tree_package_not_uber"
             signal.floatingPackage == SYSTEM_UI_PACKAGE && !systemUiIgnored -> "uber_dominant_weak_signal"
             signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING && !systemUiIgnored -> "uber_dominant_weak_signal"
+            mapSearchingTreeSignal && !offerCardTreeSignal -> "pre_offer_map_state"
             activeCapture != null -> "active_capture_exists"
             pendingCaptureRequest?.priority == CapturePriority.HIGH ||
                 pendingCaptureRequest?.priority == CapturePriority.CRITICAL -> "high_priority_pending_exists"
@@ -541,6 +555,16 @@ class RadarCaptureOrchestrator(
             else -> null
         }
         if (rejectionReason != null) {
+            if (rejectionReason == "pre_offer_map_state") {
+                RadarLogger.i(
+                    "KM_V2_ORCHESTRATOR",
+                    "KM_V2_TRIGGER_REJECTED_PRE_OFFER_MAP_STATE",
+                    "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    "currentState" to signal.currentState,
+                    "knownStateTexts" to signal.knownStateTexts.joinToString(","),
+                    "matchedConditions" to matchedConditions.joinToString(",")
+                )
+            }
             RadarLogger.d(
                 "KM_V2_ORCHESTRATOR",
                 "KM_V2_UBER_DOMINANT_DIAGNOSTIC_REJECTED",
@@ -548,6 +572,23 @@ class RadarCaptureOrchestrator(
                 "floatingPackage" to signal.floatingPackage,
                 "nodeTreePackage" to signal.nodeTreePackage,
                 "reason" to rejectionReason
+            )
+            return null
+        }
+        if (offerCardTreeSignal) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_TRIGGER_ACCEPTED_OFFER_CARD_TREE_CHANGE",
+                "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                "currentState" to signal.currentState,
+                "matchedConditions" to matchedConditions.joinToString(",")
+            )
+            startOrResetUberOfferCardStabilization(
+                signal = signal,
+                nowMs = nowMs,
+                epoch = epoch,
+                matchedConditions = matchedConditions,
+                treeTextSignals = treeTextSignals
             )
             return null
         }
@@ -574,7 +615,34 @@ class RadarCaptureOrchestrator(
             "nodeTreePackage" to signal.nodeTreePackage,
             "matchedConditions" to matchedConditions.joinToString(",")
         )
+        val enrichedRequest = buildConfirmedUberDominantDiagnosticRequest(
+            signal = signal,
+            nowMs = nowMs,
+            epoch = epoch,
+            matchedConditions = matchedConditions
+        ) ?: return null
+        uberDominantDiagnosticCooldownBySignature[signature] = nowMs
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_UBER_DOMINANT_DIAGNOSTIC_REQUEST_CREATED",
+            "requestId" to enrichedRequest.id,
+            "dominantPackage" to enrichedRequest.dominantPackage,
+            "floatingPackage" to enrichedRequest.floatingPackage,
+            "nodeTreePackage" to signal.nodeTreePackage,
+            "nodeCount" to signal.nodeCount,
+            "visibleTextNodeCount" to signal.visibleTextNodeCount,
+            "offerCycleKind" to enrichedRequest.offerCycleClassification?.kind,
+            "offerCycleId" to enrichedRequest.offerCycleClassification?.cycleId
+        )
+        return enrichedRequest
+    }
 
+    private fun buildConfirmedUberDominantDiagnosticRequest(
+        signal: RadarSignal.UberStateChanged,
+        nowMs: Long,
+        epoch: Long,
+        matchedConditions: List<String>
+    ): CaptureRequest? {
         val request = CaptureRequest(
             id = UUID.randomUUID().toString(),
             sourceEventAtMs = signal.eventReceivedAtMs,
@@ -588,7 +656,7 @@ class RadarCaptureOrchestrator(
             floatingPackage = signal.floatingPackage,
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
-            reason = "uber_dominant_possible_offer_diagnostic_capture",
+            reason = "offer_card_tree_signal_stabilized",
             analysisEpoch = epoch
         )
         val offerCycleSnapshot = OfferCycleSnapshot(
@@ -605,26 +673,17 @@ class RadarCaptureOrchestrator(
             matchedConditions = matchedConditions,
             captureRequestId = request.id
         )
-        val offerCycleClassification = offerCycleClassifier.classify(offerCycleSnapshot)
+        val rawOfferCycleClassification = offerCycleClassifier.classify(offerCycleSnapshot)
+        val offerCycleClassification = promoteOfferCycleClassificationByCardTreeSignal(
+            classification = rawOfferCycleClassification,
+            offerCardTreeSignal = true
+        )
+        if (offerCycleClassification != rawOfferCycleClassification) {
+            offerCycleClassifier.overrideLastUberDominantClassification(offerCycleClassification)
+        }
         logOfferCycleClassification(offerCycleClassification)
         RadarDebugStore.updateOfferCycle(offerCycleClassification)
-        val enrichedRequest = request.copy(
-            offerCycleClassification = offerCycleClassification
-        )
-        uberDominantDiagnosticCooldownBySignature[signature] = nowMs
-        RadarLogger.i(
-            "KM_V2_ORCHESTRATOR",
-            "KM_V2_UBER_DOMINANT_DIAGNOSTIC_REQUEST_CREATED",
-            "requestId" to enrichedRequest.id,
-            "dominantPackage" to enrichedRequest.dominantPackage,
-            "floatingPackage" to enrichedRequest.floatingPackage,
-            "nodeTreePackage" to signal.nodeTreePackage,
-            "nodeCount" to signal.nodeCount,
-            "visibleTextNodeCount" to signal.visibleTextNodeCount,
-            "offerCycleKind" to offerCycleClassification.kind,
-            "offerCycleId" to offerCycleClassification.cycleId
-        )
-        return enrichedRequest
+        return request.copy(offerCycleClassification = offerCycleClassification)
     }
 
     private fun evaluateSignal(signal: RadarSignal, request: CaptureRequest?): SignalEvaluation {
@@ -896,7 +955,10 @@ class RadarCaptureOrchestrator(
         const val NINETY_NINE_MIN_SIGNAL_SCORE = 4
         const val UBER_FLOATING_DIAGNOSTIC_COOLDOWN_MS = 5000L
         const val UBER_DOMINANT_DIAGNOSTIC_COOLDOWN_MS = 4000L
+        const val UBER_OFFER_CARD_STABILIZATION_DELAY_MS = 300L
         const val NINETY_NINE_COMPACT_DIAGNOSTIC_COOLDOWN_MS = 4000L
+        val PRICE_TREE_REGEX = Regex("""(?:r\$|\$)\s*\d""", RegexOption.IGNORE_CASE)
+        val ROUTE_PAIR_TREE_REGEX = Regex("""\b\d+\s*(?:min|minutos).*\b\d+[.,]?\d*\s*km""", RegexOption.IGNORE_CASE)
     }
 
     private fun buildUberFloatingDiagnosticSignature(signal: RadarSignal.UberFloatingOverOtherApp): String {
@@ -912,9 +974,59 @@ class RadarCaptureOrchestrator(
         return String.format(java.util.Locale.US, "%.3f", coverage)
     }
 
+    private fun buildUberDominantMatchedConditions(signal: RadarSignal.UberStateChanged): List<String> {
+        val nodeCountDelta = kotlin.math.abs(signal.nodeCount - (signal.previousNodeCount ?: 0))
+        val visibleTextDelta = kotlin.math.abs(
+            signal.visibleTextNodeCount - (signal.previousVisibleTextNodeCount ?: 0)
+        )
+        val previousSearchingText = signal.previousKnownStateTexts.any {
+            it.contains("procurando corridas", ignoreCase = true) ||
+                it.contains("procurando viagens", ignoreCase = true)
+        }
+        val currentSearchingText = signal.knownStateTexts.any {
+            it.contains("procurando corridas", ignoreCase = true) ||
+                it.contains("procurando viagens", ignoreCase = true)
+        }
+        return buildList {
+            if (signal.previousState == UberReadableState.SEARCHING_RIDES &&
+                signal.currentState != UberReadableState.SEARCHING_RIDES
+            ) {
+                add("searching_state_exit")
+            }
+            if (previousSearchingText && !currentSearchingText) {
+                add("searching_text_disappeared")
+            }
+            if (signal.numericTextNodeCount >= 1 && signal.visibleTextNodeCount >= 2) {
+                add("numeric_text_with_visible_text")
+            }
+            if (signal.buttonLikeNodeCount >= 1 && signal.visibleTextNodeCount >= 2) {
+                add("button_like_with_visible_text")
+            }
+            if (nodeCountDelta >= 8 || visibleTextDelta >= 2) {
+                add("tree_delta_threshold")
+            }
+        }
+    }
+
+    private fun computeUberOfferCardTreeScore(
+        signal: RadarSignal.UberStateChanged,
+        treeTextSignals: UberTreeTextSignals
+    ): Int {
+        var score = 0
+        if (treeTextSignals.hasPriceText) score += 3
+        if (treeTextSignals.hasUberProductText) score += 3
+        if (treeTextSignals.hasRoutePairText) score += 3
+        if (signal.numericTextNodeCount >= 2) score += 2
+        if (signal.buttonLikeNodeCount >= 1) score += 1
+        if (signal.bottomHalfTextNodeCount >= 4) score += 1
+        if (treeTextSignals.hasSearchingText) score -= 4
+        return score
+    }
+
     private fun clearPendingAutomaticWork() {
         val previousPending = pendingCaptureRequest
         pendingCaptureRequest = null
+        cancelUberOfferCardStabilization("manual_request")
         if (previousPending != null && !previousPending.isManual) {
             RadarLogger.i(
                 "KM_V2_ORCHESTRATOR",
@@ -924,6 +1036,15 @@ class RadarCaptureOrchestrator(
             )
         }
     }
+
+    private data class UberOfferCardStabilization(
+        val signal: RadarSignal.UberStateChanged,
+        val matchedConditions: List<String>,
+        val treeTextSignals: UberTreeTextSignals,
+        val epoch: Long,
+        val version: Int,
+        val cancellationHandle: StabilizationScheduler.CancellationHandle
+    )
 
     private fun logOfferCycleClassification(classification: OfferCycleClassification) {
         RadarLogger.i(
@@ -954,6 +1075,178 @@ class RadarCaptureOrchestrator(
         )
     }
 
+    private fun handleUberOfferCardStabilizationSignal(signal: RadarSignal) {
+        val pending = pendingUberOfferCardStabilization ?: return
+        if (signal !is RadarSignal.UberStateChanged) {
+            return
+        }
+        if (signal.dominantPackage != RadarConfig.UBER_DRIVER_PACKAGE) {
+            cancelUberOfferCardStabilization("weak_evidence")
+            return
+        }
+        val matchedConditions = buildUberDominantMatchedConditions(signal)
+        val treeTextSignals = evaluateUberTreeTextSignals(signal)
+        val offerCardTreeSignal = hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)
+        val mapSearchingTreeSignal = hasMapSearchingTreeSignal(signal, treeTextSignals)
+        if (mapSearchingTreeSignal) {
+            cancelUberOfferCardStabilization("operational_text_detected")
+            return
+        }
+        if (offerCardTreeSignal) {
+            startOrResetUberOfferCardStabilization(
+                signal = signal,
+                nowMs = clock.nowMs(),
+                epoch = AnalysisEpochController.current(),
+                matchedConditions = matchedConditions,
+                treeTextSignals = treeTextSignals,
+                isReset = true,
+                previousVersion = pending.version
+            )
+        }
+    }
+
+    private fun startOrResetUberOfferCardStabilization(
+        signal: RadarSignal.UberStateChanged,
+        nowMs: Long,
+        epoch: Long,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals,
+        isReset: Boolean = false,
+        previousVersion: Int = 0
+    ) {
+        pendingUberOfferCardStabilization?.cancellationHandle?.cancel()
+        val nextVersion = if (isReset) previousVersion + 1 else (pendingUberOfferCardStabilization?.version ?: 0) + 1
+        val treeScore = computeUberOfferCardTreeScore(signal, treeTextSignals)
+        val handle = stabilizationScheduler.schedule(UBER_OFFER_CARD_STABILIZATION_DELAY_MS) {
+            confirmUberOfferCardStabilization(nextVersion)
+        }
+        pendingUberOfferCardStabilization = UberOfferCardStabilization(
+            signal = signal,
+            matchedConditions = matchedConditions,
+            treeTextSignals = treeTextSignals,
+            epoch = epoch,
+            version = nextVersion,
+            cancellationHandle = handle
+        )
+        if (isReset) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OFFER_CARD_STABILIZATION_RESET",
+                "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                "reason" to "tree_changed_still_candidate"
+            )
+        } else {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OFFER_CARD_STABILIZATION_STARTED",
+                "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                "delayMs" to UBER_OFFER_CARD_STABILIZATION_DELAY_MS,
+                "treeScore" to treeScore,
+                "hasPriceText" to treeTextSignals.hasPriceText,
+                "hasUberProductText" to treeTextSignals.hasUberProductText,
+                "hasRoutePairText" to treeTextSignals.hasRoutePairText,
+                "hasSearchingText" to treeTextSignals.hasSearchingText
+            )
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_CAPTURE_DELAYED_BY_STABILIZATION",
+                "originalTriggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                "delayMs" to UBER_OFFER_CARD_STABILIZATION_DELAY_MS
+            )
+        }
+    }
+
+    private fun confirmUberOfferCardStabilization(expectedVersion: Int) {
+        val pending = pendingUberOfferCardStabilization ?: return
+        if (pending.version != expectedVersion) {
+            return
+        }
+        pendingUberOfferCardStabilization = null
+        val signal = pending.signal
+        val matchedConditions = buildUberDominantMatchedConditions(signal)
+        val treeTextSignals = evaluateUberTreeTextSignals(signal)
+        val offerCardTreeSignal = hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)
+        val mapSearchingTreeSignal = hasMapSearchingTreeSignal(signal, treeTextSignals)
+        if (!offerCardTreeSignal || mapSearchingTreeSignal) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
+                "reason" to if (mapSearchingTreeSignal) "map_searching_state" else "weak_evidence"
+            )
+            return
+        }
+        val nowMs = clock.nowMs()
+        val signature = buildUberDominantDiagnosticSignature(signal)
+        val lastCapturedAt = uberDominantDiagnosticCooldownBySignature[signature]
+        if (lastCapturedAt != null && nowMs - lastCapturedAt < UBER_DOMINANT_DIAGNOSTIC_COOLDOWN_MS) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
+                "reason" to "same_signature_cooldown"
+            )
+            return
+        }
+        val request = buildConfirmedUberDominantDiagnosticRequest(
+            signal = signal,
+            nowMs = nowMs,
+            epoch = pending.epoch,
+            matchedConditions = matchedConditions
+        ) ?: return
+        uberDominantDiagnosticCooldownBySignature[signature] = nowMs
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_OFFER_CARD_STABILIZATION_CONFIRMED",
+            "reason" to "offer_card_tree_signal_stabilized",
+            "finalTreeScore" to computeUberOfferCardTreeScore(signal, treeTextSignals),
+            "hasPriceText" to treeTextSignals.hasPriceText,
+            "hasUberProductText" to treeTextSignals.hasUberProductText,
+            "hasRoutePairText" to treeTextSignals.hasRoutePairText
+        )
+        RadarDebugStore.updateLastCaptureRequest(request)
+        scheduleCapture(request)
+    }
+
+    private fun cancelUberOfferCardStabilization(reason: String) {
+        val pending = pendingUberOfferCardStabilization ?: return
+        pending.cancellationHandle.cancel()
+        pendingUberOfferCardStabilization = null
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
+            "reason" to reason
+        )
+    }
+
+    private fun promoteOfferCycleClassificationByCardTreeSignal(
+        classification: OfferCycleClassification,
+        offerCardTreeSignal: Boolean
+    ): OfferCycleClassification {
+        if (!offerCardTreeSignal) {
+            return classification
+        }
+        if (classification.kind == OfferCycleKind.NEW_OFFER_CYCLE &&
+            classification.shouldPreferForOcr &&
+            classification.reason == "offer_card_tree_signal"
+        ) {
+            return classification
+        }
+        val promoted = classification.copy(
+            kind = OfferCycleKind.NEW_OFFER_CYCLE,
+            reason = "offer_card_tree_signal",
+            shouldPreferForOcr = true
+        )
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_OFFER_CYCLE_PROMOTED_BY_CARD_TREE_SIGNAL",
+            "previousKind" to classification.kind,
+            "newKind" to promoted.kind,
+            "previousReason" to classification.reason,
+            "newReason" to promoted.reason,
+            "shouldPreferForOcr" to promoted.shouldPreferForOcr
+        )
+        return promoted
+    }
+
     private fun buildUberDominantDiagnosticSignature(signal: RadarSignal.UberStateChanged): String {
         return listOf(
             signal.dominantPackage,
@@ -966,8 +1259,12 @@ class RadarCaptureOrchestrator(
 
     private fun isStrongUberDominantSignal(
         signal: RadarSignal.UberStateChanged,
-        matchedConditions: List<String>
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals
     ): Boolean {
+        if (!hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)) {
+            return false
+        }
         val strongMatchedConditions = matchedConditions.count {
             it == "numeric_text_with_visible_text" ||
                 it == "button_like_with_visible_text" ||
@@ -986,6 +1283,132 @@ class RadarCaptureOrchestrator(
                     (signal.buttonLikeNodeCount >= 2)
                 )
     }
+
+    private fun hasMapSearchingTreeSignal(
+        signal: RadarSignal.UberStateChanged,
+        treeTextSignals: UberTreeTextSignals
+    ): Boolean {
+        if (treeTextSignals.hasSearchingText &&
+            !treeTextSignals.hasPriceText &&
+            !treeTextSignals.hasUberProductText &&
+            !treeTextSignals.hasRoutePairText
+        ) {
+            return true
+        }
+        val normalizedTexts = signal.knownStateTexts.map { it.lowercase() }
+        return signal.currentState == UberReadableState.SEARCHING_RIDES ||
+            normalizedTexts.any {
+                it.contains("procurando corridas") ||
+                    it.contains("procurando viagens") ||
+                    it.contains("buscando corridas") ||
+                    it.contains("buscando")
+            }
+    }
+
+    private fun hasOfferCardTreeSignal(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals
+    ): Boolean {
+        val strongTextEvidence = treeTextSignals.hasPriceText ||
+            treeTextSignals.hasUberProductText ||
+            treeTextSignals.hasRoutePairText
+        if (!strongTextEvidence) {
+            if (signal.buttonLikeNodeCount >= 1 || signal.bottomHalfTextNodeCount >= 2) {
+                RadarLogger.i(
+                    "KM_V2_ORCHESTRATOR",
+                    "KM_V2_OFFER_CARD_TREE_SIGNAL_REJECTED_WEAK_EVIDENCE",
+                    "reason" to "button_like_without_price_product_or_route",
+                    "numericTextNodeCount" to signal.numericTextNodeCount,
+                    "buttonLikeNodeCount" to signal.buttonLikeNodeCount,
+                    "bottomHalfTextNodeCount" to signal.bottomHalfTextNodeCount,
+                    "knownStateTexts" to signal.knownStateTexts.joinToString(",")
+                )
+            }
+            return false
+        }
+        if (treeTextSignals.hasSearchingText &&
+            !treeTextSignals.hasPriceText &&
+            !treeTextSignals.hasUberProductText &&
+            !treeTextSignals.hasRoutePairText
+        ) {
+            return false
+        }
+        val numericBottomSheet = signal.numericTextNodeCount >= 2
+        val numericWithVisibleText = "numeric_text_with_visible_text" in matchedConditions &&
+            signal.bottomHalfTextNodeCount >= 2
+        val numericWithButtonAndRoute = signal.numericTextNodeCount >= 1 &&
+            signal.buttonLikeNodeCount >= 1 &&
+            treeTextSignals.hasRoutePairText
+        val strongTreeDelta = "tree_delta_threshold" in matchedConditions &&
+            (signal.numericTextNodeCount >= 2 ||
+                (signal.numericTextNodeCount >= 1 && treeTextSignals.hasRoutePairText) ||
+                treeTextSignals.hasPriceText ||
+                treeTextSignals.hasUberProductText) &&
+            signal.bottomHalfTextNodeCount >= 2
+        val searchingExitWithSurface = (
+            "searching_state_exit" in matchedConditions ||
+                "searching_text_disappeared" in matchedConditions
+            ) && (signal.bottomHalfTextNodeCount >= 2 || signal.visibleTextNodeCount >= 3) &&
+            (
+                "tree_delta_threshold" in matchedConditions ||
+                    signal.numericTextNodeCount >= 2 ||
+                    treeTextSignals.hasPriceText ||
+                    treeTextSignals.hasUberProductText ||
+                    treeTextSignals.hasRoutePairText
+                )
+        return numericBottomSheet || numericWithVisibleText || numericWithButtonAndRoute || strongTreeDelta || searchingExitWithSurface
+    }
+
+    private fun evaluateUberTreeTextSignals(signal: RadarSignal.UberStateChanged): UberTreeTextSignals {
+        val normalizedTexts = signal.knownStateTexts.map { it.lowercase() }
+        val hasPriceText = normalizedTexts.any { it.contains("r$") || PRICE_TREE_REGEX.containsMatchIn(it) }
+        val hasUberProductText = normalizedTexts.any {
+            it.contains("uberx") ||
+                it.contains("priority") ||
+                it.contains("flash") ||
+                it.contains("comfort") ||
+                it.contains("black") ||
+                it.contains("exclusivo")
+        }
+        val hasRoutePairText = normalizedTexts.any {
+            ROUTE_PAIR_TREE_REGEX.containsMatchIn(it) || (it.contains("min") && it.contains("km"))
+        }
+        val hasSearchingText = normalizedTexts.any {
+            it.contains("procurando viagens") ||
+                it.contains("procurando corridas") ||
+                it.contains("buscando") ||
+                it.contains("página inicial") ||
+                it.contains("pagina inicial") ||
+                it.contains("ganhos") ||
+                it.contains("ficar online") ||
+                it.contains("mensagens") ||
+                it.contains("menu") ||
+                it.contains("conectar")
+        }
+        val rejectionReason = when {
+            hasSearchingText && !hasPriceText && !hasUberProductText && !hasRoutePairText ->
+                "searching_text_without_price_product_or_route"
+            !hasPriceText && !hasUberProductText && !hasRoutePairText ->
+                "button_like_without_price_product_or_route"
+            else -> null
+        }
+        return UberTreeTextSignals(
+            hasPriceText = hasPriceText,
+            hasUberProductText = hasUberProductText,
+            hasRoutePairText = hasRoutePairText,
+            hasSearchingText = hasSearchingText,
+            rejectionReason = rejectionReason
+        )
+    }
+
+    private data class UberTreeTextSignals(
+        val hasPriceText: Boolean,
+        val hasUberProductText: Boolean,
+        val hasRoutePairText: Boolean,
+        val hasSearchingText: Boolean,
+        val rejectionReason: String?
+    )
 
     private fun uberNodeCountBucket(nodeCount: Int): String {
         return when {

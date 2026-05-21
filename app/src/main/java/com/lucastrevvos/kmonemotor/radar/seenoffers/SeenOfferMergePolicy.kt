@@ -62,18 +62,20 @@ class SeenOfferMergePolicy(
     }
 
     fun qualityScore(offer: SeenOffer): Int {
+        val resolvedEconomics = RideEconomicsCalculator.resolveRideEconomics(
+            platform = offer.platform,
+            price = offer.price,
+            explicitValuePerKm = offer.valuePerKm,
+            totalDistanceKm = offer.totalDistanceKm,
+            pickupDistanceKm = offer.pickupDistanceKm,
+            tripDistanceKm = offer.tripDistanceKm
+        )
         var score = 0
         if (offer.price != null) score += 2
         if (offer.pickupDistanceKm != null) score += 2
         if (offer.tripDistanceKm != null) score += 2
         if (offer.totalDistanceKm != null) score += 2
-        if (RideEconomicsCalculator.calculateValuePerKm(
-                price = offer.price,
-                totalDistanceKm = offer.totalDistanceKm,
-                pickupDistanceKm = offer.pickupDistanceKm,
-                tripDistanceKm = offer.tripDistanceKm
-            ) != null
-        ) score += 2
+        if (resolvedEconomics.valuePerKm != null) score += 2
         if (offer.pickupTimeMin != null) score += 1
         if (offer.tripTimeMin != null) score += 1
         if (!offer.originPreview.isNullOrBlank()) score += 2
@@ -90,19 +92,53 @@ class SeenOfferMergePolicy(
             }
         }
 
-        val calculatedValuePerKm = RideEconomicsCalculator.calculateValuePerKm(
-            price = offer.price,
-            totalDistanceKm = offer.totalDistanceKm,
-            pickupDistanceKm = offer.pickupDistanceKm,
-            tripDistanceKm = offer.tripDistanceKm
-        )
+        val calculatedValuePerKm = resolvedEconomics.valuePerKm
         if (calculatedValuePerKm != null && offer.valuePerKm != null && abs(calculatedValuePerKm - offer.valuePerKm) > 0.20) {
             score -= 3
+        }
+        if (resolvedEconomics.warnings.contains("suspicious_meter_distance_probably_time")) {
+            score -= 5
+        }
+        if (offer.platform == RidePlatform.NINETY_NINE && resolvedEconomics.valuePerKm != null && resolvedEconomics.valuePerKm > 8.0) {
+            score -= 4
         }
         if (offer.productName?.let(SeenOfferSanitizationRules::isBadProductName) == true) {
             score -= 5
         }
         return score
+    }
+
+    fun isEconomicsDowngrade(existing: SeenOffer, candidate: SeenOffer): Boolean {
+        val existingEconomics = RideEconomicsCalculator.resolveRideEconomics(
+            platform = existing.platform,
+            price = existing.price,
+            explicitValuePerKm = existing.valuePerKm,
+            totalDistanceKm = existing.totalDistanceKm,
+            pickupDistanceKm = existing.pickupDistanceKm,
+            tripDistanceKm = existing.tripDistanceKm
+        )
+        val candidateEconomics = RideEconomicsCalculator.resolveRideEconomics(
+            platform = candidate.platform,
+            price = candidate.price,
+            explicitValuePerKm = candidate.valuePerKm,
+            totalDistanceKm = candidate.totalDistanceKm,
+            pickupDistanceKm = candidate.pickupDistanceKm,
+            tripDistanceKm = candidate.tripDistanceKm
+        )
+        if (existing.platform != RidePlatform.NINETY_NINE && candidate.platform != RidePlatform.NINETY_NINE) {
+            return false
+        }
+        if (
+            existingEconomics.totalDistanceKm != null &&
+            candidateEconomics.totalDistanceKm != null &&
+            existingEconomics.totalDistanceKm > 1.0 &&
+            candidateEconomics.totalDistanceKm < existingEconomics.totalDistanceKm * 0.25 &&
+            candidateEconomics.valuePerKm != null &&
+            candidateEconomics.valuePerKm > 8.0
+        ) {
+            return true
+        }
+        return false
     }
 
     fun mergeBetter(existing: SeenOffer, candidate: SeenOffer): SeenOffer {

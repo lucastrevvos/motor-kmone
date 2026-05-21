@@ -55,7 +55,7 @@ class VisualOfferProbeTest {
     }
 
     @Test
-    fun uberDominantDiagnostic_prefersCenterCardAreaWhenScoreAtLeastFive() {
+    fun uberDominantDiagnostic_prefersLowerHalfWhenValidEvenIfCenterScoresHigher() {
         val observation = observation(triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC)
         val candidates = listOf(
             candidate("center", CropKind.CENTER_CARD_AREA),
@@ -70,32 +70,34 @@ class VisualOfferProbeTest {
 
         val ranking = probe.rankCandidates(observation, candidates, results)
 
-        assertEquals(CropKind.CENTER_CARD_AREA, ranking.bestCandidate?.kind)
-        assertEquals("selected_by_trigger_priority_center_card_area", ranking.reason)
+        assertEquals(CropKind.LOWER_HALF, ranking.bestCandidate?.kind)
+        assertEquals("selected_by_trigger_priority_lower_half", ranking.reason)
     }
 
     @Test
-    fun uberDominantDiagnostic_withAllRejectedCrops_usesCenterCardFallback() {
+    fun uberDominantDiagnostic_withAllRejectedCrops_usesLowerHalfFallbackBeforeCenter() {
         val observation = observation(triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC)
         val candidates = listOf(
             candidate("center", CropKind.CENTER_CARD_AREA),
             candidate("lower", CropKind.LOWER_HALF),
+            candidate("third", CropKind.LOWER_THIRD),
             candidate("full", CropKind.FULL_DEBUG)
         )
         val results = listOf(
             result("center", CropKind.CENTER_CARD_AREA, score = 1, rejectionReason = "almost_all_light"),
             result("lower", CropKind.LOWER_HALF, score = 2, rejectionReason = "looks_like_map_or_home"),
+            result("third", CropKind.LOWER_THIRD, score = 1, rejectionReason = "looks_like_map_or_home"),
             result("full", CropKind.FULL_DEBUG, score = 8, rejectionReason = null)
         )
 
         val ranking = probe.rankCandidates(observation, candidates, results)
 
-        assertEquals(CropKind.CENTER_CARD_AREA, ranking.bestCandidate?.kind)
+        assertEquals(CropKind.LOWER_HALF, ranking.bestCandidate?.kind)
         assertEquals("accepted_by_strong_uber_dominant_signal", ranking.reason)
         assertEquals("uber_dominant_signal_fallback", ranking.selectedByRule)
         assertTrue(ranking.acceptedForOcrFuture)
         assertTrue(ranking.visualFallbackApplied)
-        assertEquals("almost_all_light", ranking.originalBestRejectionReason)
+        assertEquals("looks_like_map_or_home", ranking.originalBestRejectionReason)
     }
 
     @Test

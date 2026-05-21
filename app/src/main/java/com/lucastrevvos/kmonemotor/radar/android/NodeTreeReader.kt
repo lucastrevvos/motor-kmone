@@ -78,9 +78,27 @@ class NodeTreeReader {
             "offline",
             "online",
             "procurando corridas",
+            "procurando viagens",
             "buscando corridas",
+            "buscando",
+            "página inicial",
+            "pagina inicial",
+            "ganhos",
+            "ficar online",
+            "mensagens",
+            "menu",
+            "conectar",
             "você está offline",
-            "você está online"
+            "você está online",
+            "uberx",
+            "priority",
+            "flash",
+            "comfort",
+            "black",
+            "exclusivo",
+            "r$",
+            "min",
+            "km"
         )
     }
 }

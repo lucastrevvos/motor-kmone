@@ -90,6 +90,10 @@ class OfferCycleClassifier {
         return classification
     }
 
+    fun overrideLastUberDominantClassification(classification: OfferCycleClassification) {
+        lastUberDominantClassification = classification
+    }
+
     private fun buildNewCycle(
         previousClassification: OfferCycleClassification?,
         timeSincePreviousMs: Long?,

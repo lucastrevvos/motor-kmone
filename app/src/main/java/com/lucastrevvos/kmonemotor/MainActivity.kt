@@ -81,6 +81,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.HomeGoalSource
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsPeriodFilter
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummary
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RecordsSummaryProvider
+import com.lucastrevvos.kmonemotor.radar.seenoffers.ResolvedRideEconomics
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RideEconomicsCalculator
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRide
@@ -1666,12 +1667,12 @@ private fun SeenOfferExpandedContent(
         MetricsRow(
             title = "Busca",
             time = offer.pickupTimeMin,
-            distance = normalizedDistanceForDisplay(offer.pickupDistanceKm)
+            distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).pickupDistanceKm)
         )
         MetricsRow(
             title = "Viagem",
             time = offer.tripTimeMin,
-            distance = normalizedDistanceForDisplay(offer.tripDistanceKm)
+            distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).tripDistanceKm)
         )
         DetailLine(
             "Total",
@@ -1763,18 +1764,18 @@ private fun LegacySeenOfferCard(
             MetricsRow(
                 title = "Busca",
                 time = offer.pickupTimeMin,
-                distance = normalizedDistanceForDisplay(offer.pickupDistanceKm)
+                distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).pickupDistanceKm)
             )
             MetricsRow(
                 title = "Viagem",
                 time = offer.tripTimeMin,
-                distance = normalizedDistanceForDisplay(offer.tripDistanceKm)
+                distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).tripDistanceKm)
             )
             DetailLine("Origem", offer.originPreview ?: "—")
             DetailLine("Destino", offer.destinationPreview ?: "—")
             DetailLine(
                 "Total",
-                normalizedDistanceForDisplay(offer.totalDistanceKm)?.let(::formatKm) ?: "—"
+                normalizedDistanceForDisplay(resolvedSeenOfferDistanceKm(offer))?.let(::formatKm) ?: "—"
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -2412,17 +2413,18 @@ private fun SavedRideExpandedContent(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val resolvedEconomics = resolvedSavedRideEconomics(ride)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
         DetailLine("Produto", ride.productName ?: platformLabel(ride.platform))
         DetailLine("Quando", formatRecordStamp(ride.acceptedAtMs, period, includeDateForDay = true))
         DetailLine("Origem", ride.originPreview ?: "—")
         DetailLine("Destino", ride.destinationPreview ?: "—")
-        MetricsRow("Busca", ride.pickupTimeMin, normalizedDistanceForDisplay(ride.pickupDistanceKm))
-        MetricsRow("Viagem", ride.tripTimeMin, normalizedDistanceForDisplay(ride.tripDistanceKm))
+        MetricsRow("Busca", ride.pickupTimeMin, normalizedDistanceForDisplay(resolvedEconomics.pickupDistanceKm))
+        MetricsRow("Viagem", ride.tripTimeMin, normalizedDistanceForDisplay(resolvedEconomics.tripDistanceKm))
         DetailLine(
             "Total",
-            normalizedDistanceForDisplay(rideDistanceKmForDisplay(ride))?.let(::formatKm) ?: "—"
+            normalizedDistanceForDisplay(resolvedEconomics.totalDistanceKm)?.let(::formatKm) ?: "—"
         )
         DetailLine("Fonte", savedRideSourceLabel(ride.source))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3081,11 +3083,14 @@ private fun recordsPeriodShortLabel(period: RecordsPeriodFilter): String {
 
 private fun rideDistanceKmForDisplay(ride: SavedRide): Double? {
     return normalizedDistanceForDisplay(
-        RideEconomicsCalculator.resolveTotalDistanceKm(
+        RideEconomicsCalculator.resolveRideEconomics(
+            platform = ride.platform,
+            price = ride.price,
+            explicitValuePerKm = ride.valuePerKm,
             totalDistanceKm = ride.totalDistanceKm,
             pickupDistanceKm = ride.pickupDistanceKm,
             tripDistanceKm = ride.tripDistanceKm
-        )
+        ).totalDistanceKm
     )
 }
 
@@ -3146,31 +3151,36 @@ private fun formatDecimal(value: Double): String {
 }
 
 private fun recalculateValuePerKm(ride: SavedRide): Double? {
-    return RideEconomicsCalculator.calculateValuePerKm(
+    return RideEconomicsCalculator.resolveRideEconomics(
+        platform = ride.platform,
         price = ride.price,
+        explicitValuePerKm = ride.valuePerKm,
         totalDistanceKm = ride.totalDistanceKm,
         pickupDistanceKm = ride.pickupDistanceKm,
         tripDistanceKm = ride.tripDistanceKm
-    )
+    ).valuePerKm
 }
 
-private fun resolvedSeenOfferDistanceKm(offer: SeenOffer): Double? {
-    return com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferConsistencyAuditor()
-        .audit(offer)
-        .normalizedOffer
-        .totalDistanceKm
-}
-
-private fun resolvedSeenOfferValuePerKm(offer: SeenOffer): Double? {
+private fun resolvedSeenOfferEconomics(offer: SeenOffer): ResolvedRideEconomics {
     val normalized = com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferConsistencyAuditor()
         .audit(offer)
         .normalizedOffer
-    return normalized.valuePerKm ?: RideEconomicsCalculator.calculateValuePerKm(
+    return RideEconomicsCalculator.resolveRideEconomics(
+        platform = normalized.platform,
         price = normalized.price,
+        explicitValuePerKm = normalized.valuePerKm,
         totalDistanceKm = normalized.totalDistanceKm,
         pickupDistanceKm = normalized.pickupDistanceKm,
         tripDistanceKm = normalized.tripDistanceKm
     )
+}
+
+private fun resolvedSeenOfferDistanceKm(offer: SeenOffer): Double? {
+    return resolvedSeenOfferEconomics(offer).totalDistanceKm
+}
+
+private fun resolvedSeenOfferValuePerKm(offer: SeenOffer): Double? {
+    return resolvedSeenOfferEconomics(offer).valuePerKm
 }
 
 private fun seenOfferPerKmLabel(offer: SeenOffer): String {
@@ -3178,12 +3188,18 @@ private fun seenOfferPerKmLabel(offer: SeenOffer): String {
 }
 
 private fun resolvedSavedRideValuePerKm(ride: SavedRide): Double? {
-    return RideEconomicsCalculator.calculateValuePerKm(
+    return resolvedSavedRideEconomics(ride).valuePerKm
+}
+
+private fun resolvedSavedRideEconomics(ride: SavedRide): ResolvedRideEconomics {
+    return RideEconomicsCalculator.resolveRideEconomics(
+        platform = ride.platform,
         price = ride.price,
+        explicitValuePerKm = ride.valuePerKm,
         totalDistanceKm = ride.totalDistanceKm,
         pickupDistanceKm = ride.pickupDistanceKm,
         tripDistanceKm = ride.tripDistanceKm
-    ) ?: ride.valuePerKm
+    )
 }
 
 private fun savedRidePerKmLabel(ride: SavedRide): String {

@@ -65,8 +65,9 @@ class AutomaticCaptureBurstPolicyTest {
         )
 
         assertTrue(decision.shouldScheduleBurst)
-        assertEquals("unknown_probable_offer_context", decision.reason)
+        assertEquals("dominant_center_unknown_retry_lower_half", decision.reason)
         assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+        assertEquals(CropKind.LOWER_THIRD, decision.preferredCropOrder[1])
     }
 
     @Test
@@ -252,6 +253,7 @@ class AutomaticCaptureBurstPolicyTest {
         )
 
         assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+        assertEquals(CropKind.LOWER_THIRD, decision.preferredCropOrder[1])
     }
 
     private fun input(

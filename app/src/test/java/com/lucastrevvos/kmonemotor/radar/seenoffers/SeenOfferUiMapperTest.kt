@@ -53,7 +53,42 @@ class SeenOfferUiMapperTest {
         assertEquals("—", model.totalDistanceLabel)
     }
 
+    @Test
+    fun ninetyNine_segmentedDistances_showAuditedTotalAndExplicitEconomics() {
+        val model = mapper.map(
+            offer(
+                platform = RidePlatform.NINETY_NINE,
+                price = 20.60,
+                valuePerKm = 1.30,
+                pickupDistanceKm = 1.9,
+                tripDistanceKm = 14.0,
+                totalDistanceKm = 1.9
+            )
+        )
+
+        assertEquals("15,9 km", model.totalDistanceLabel)
+        assertEquals("R$ 1,30/km", model.valuePerKmLabel)
+    }
+
+    @Test
+    fun ninetyNine_pickupOnlyWrongTotal_doesNotShowTenPlusPerKmWhenExplicitValuePerKmIsLow() {
+        val model = mapper.map(
+            offer(
+                platform = RidePlatform.NINETY_NINE,
+                price = 20.60,
+                valuePerKm = 1.30,
+                pickupDistanceKm = 1.9,
+                tripDistanceKm = null,
+                totalDistanceKm = 1.9
+            )
+        )
+
+        assertEquals("15,8 km", model.totalDistanceLabel)
+        assertEquals("R$ 1,30/km", model.valuePerKmLabel)
+    }
+
     private fun offer(
+        platform: RidePlatform = RidePlatform.UBER,
         price: Double?,
         valuePerKm: Double?,
         pickupDistanceKm: Double?,
@@ -62,7 +97,7 @@ class SeenOfferUiMapperTest {
     ) = SeenOffer(
         id = "seen-1",
         observationId = "obs-1",
-        platform = RidePlatform.UBER,
+        platform = platform,
         sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
         status = SeenOfferStatus.SEEN,
         price = price,
@@ -73,10 +108,10 @@ class SeenOfferUiMapperTest {
         tripTimeMin = 8.0,
         totalDistanceKm = totalDistanceKm,
         estimatedTotalTimeMin = 12.0,
-        productName = "UberX",
+        productName = if (platform == RidePlatform.NINETY_NINE) "99" else "UberX",
         originPreview = "Avenida das Nacoes",
         destinationPreview = "Rua Leonel Pereira",
-        rawTextPreview = "UberX",
+        rawTextPreview = "Oferta",
         score = 9,
         rawTextHash = "hash",
         routeTextHash = "route",

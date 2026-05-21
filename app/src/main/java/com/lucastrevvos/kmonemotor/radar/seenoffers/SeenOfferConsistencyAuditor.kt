@@ -1,6 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
-import kotlin.math.abs
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 
 data class SeenOfferAuditResult(
     val normalizedOffer: SeenOffer,
@@ -13,44 +13,45 @@ class SeenOfferConsistencyAuditor {
     fun audit(offer: SeenOffer): SeenOfferAuditResult {
         var adjusted = offer
         val warnings = mutableListOf<String>()
-
-        val pickup = adjusted.pickupDistanceKm?.takeIf { it > 0.0 }
-        val trip = adjusted.tripDistanceKm?.takeIf { it > 0.0 }
-        val total = adjusted.totalDistanceKm?.takeIf { it > 0.0 }
-        val pickupPlusTrip = if (pickup != null && trip != null) pickup + trip else null
-        val shouldPreferPickupPlusTrip = pickupPlusTrip != null &&
-            total != null &&
-            total > 0.0 &&
-            abs(total - pickupPlusTrip) / total > TOTAL_DISTANCE_DIVERGENCE_THRESHOLD
-
-        if (shouldPreferPickupPlusTrip) {
-            adjusted = adjusted.copy(totalDistanceKm = pickupPlusTrip)
-            warnings += "total_distance_mismatch_using_pickup_plus_trip"
-        } else {
-            adjusted = adjusted.copy(
-                totalDistanceKm = RideEconomicsCalculator.resolveTotalDistanceKm(
-                    totalDistanceKm = adjusted.totalDistanceKm,
-                    pickupDistanceKm = adjusted.pickupDistanceKm,
-                    tripDistanceKm = adjusted.tripDistanceKm
-                )
-            )
-        }
-
-        val calculatedValuePerKm = RideEconomicsCalculator.calculateValuePerKm(
+        val resolvedEconomics = RideEconomicsCalculator.resolveRideEconomics(
+            platform = adjusted.platform,
             price = adjusted.price,
+            explicitValuePerKm = adjusted.valuePerKm,
             totalDistanceKm = adjusted.totalDistanceKm,
             pickupDistanceKm = adjusted.pickupDistanceKm,
             tripDistanceKm = adjusted.tripDistanceKm
         )
-        val ocrValuePerKm = adjusted.valuePerKm?.takeIf { it > 0.0 }
-        if (
-            calculatedValuePerKm != null &&
-            ocrValuePerKm != null &&
-            abs(calculatedValuePerKm - ocrValuePerKm) > VALUE_PER_KM_MISMATCH_THRESHOLD
-        ) {
-            warnings += "value_per_km_mismatch"
+        warnings += resolvedEconomics.warnings
+        adjusted = adjusted.copy(
+            pickupDistanceKm = resolvedEconomics.pickupDistanceKm,
+            tripDistanceKm = resolvedEconomics.tripDistanceKm,
+            totalDistanceKm = resolvedEconomics.totalDistanceKm,
+            valuePerKm = resolvedEconomics.valuePerKm
+        )
+
+        RadarLogger.i(
+            "KM_V2_SEEN",
+            "KM_V2_ROUTE_METRICS_AUDITED",
+            "observationId" to adjusted.observationId,
+            "platform" to adjusted.platform,
+            "price" to adjusted.price,
+            "pickupDistanceKm" to adjusted.pickupDistanceKm,
+            "tripDistanceKm" to adjusted.tripDistanceKm,
+            "totalDistanceKm" to adjusted.totalDistanceKm,
+            "valuePerKm" to adjusted.valuePerKm,
+            "warnings" to warnings.joinToString(",")
+        )
+        if (warnings.contains("total_distance_inferred_from_value_per_km")) {
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_TOTAL_DISTANCE_INFERRED_FROM_VALUE_PER_KM",
+                "observationId" to adjusted.observationId,
+                "platform" to adjusted.platform,
+                "price" to adjusted.price,
+                "valuePerKm" to adjusted.valuePerKm,
+                "totalDistanceKm" to adjusted.totalDistanceKm
+            )
         }
-        adjusted = adjusted.copy(valuePerKm = calculatedValuePerKm ?: ocrValuePerKm)
 
         val price = adjusted.price
         val tripTime = adjusted.tripTimeMin
@@ -88,7 +89,5 @@ class SeenOfferConsistencyAuditor {
 
     companion object {
         private const val MAX_ALLOWED_PRICE_BRL = 300.0
-        private const val TOTAL_DISTANCE_DIVERGENCE_THRESHOLD = 0.30
-        private const val VALUE_PER_KM_MISMATCH_THRESHOLD = 0.20
     }
 }

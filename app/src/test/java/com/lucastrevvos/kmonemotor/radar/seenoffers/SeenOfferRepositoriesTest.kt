@@ -264,6 +264,44 @@ class SeenOfferRepositoriesTest {
     }
 
     @Test
+    fun duplicateWithSuspiciousDowngradedEconomics_keepsExistingSaneNinetyNineOffer() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "good-99",
+                observationId = "obs-good",
+                platform = RidePlatform.NINETY_NINE,
+                price = 21.40,
+                pickupDistanceKm = 0.858,
+                tripDistanceKm = 17.6,
+                totalDistanceKm = 18.458,
+                sourceTrigger = "UBER_AUTO_BURST_RECOVERY",
+                createdAtMs = 1_000L
+            ).copy(valuePerKm = 21.40 / 18.458)
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "bad-99",
+                observationId = "obs-bad",
+                platform = RidePlatform.NINETY_NINE,
+                price = 21.40,
+                pickupDistanceKm = 0.858,
+                tripDistanceKm = 0.025,
+                totalDistanceKm = 0.883,
+                sourceTrigger = "UBER_AUTO_BURST_RECOVERY",
+                createdAtMs = 4_000L
+            ).copy(valuePerKm = 24.235)
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals(18.458, repo.listSeenOffers().first().totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(17.6, repo.listSeenOffers().first().tripDistanceKm ?: 0.0, 0.01)
+    }
+
+    @Test
     fun acceptManually_createsSavedRideAndUpdatesStatus() {
         val seenRepo = seenOfferRepository()
         val rideRepo = savedRideRepository()

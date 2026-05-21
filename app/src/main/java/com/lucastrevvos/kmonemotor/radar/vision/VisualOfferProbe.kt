@@ -184,11 +184,17 @@ class VisualOfferProbe(
             )
 
         val forced = when (observation.triggerSource) {
-            TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
-            TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC -> ranked.firstOrNull {
+            TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC -> ranked.firstOrNull {
                 it.kind == CropKind.CENTER_CARD_AREA && it.valid && it.probe.offerLikeScore >= 5
             } ?: ranked.firstOrNull {
                 it.kind == CropKind.LOWER_HALF && it.valid && it.probe.offerLikeScore >= 5
+            }
+            TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC -> ranked.firstOrNull {
+                it.kind == CropKind.LOWER_HALF && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.LOWER_THIRD && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.CENTER_CARD_AREA && it.valid && it.probe.offerLikeScore >= 5
             }
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> preferredCropOrder(observation).asSequence()
                 .mapNotNull { preferredKind ->
@@ -203,12 +209,29 @@ class VisualOfferProbe(
             }
             else -> null
         }
+        if (observation.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC) {
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_UBER_DOMINANT_CROP_PRIORITY_APPLIED",
+                "observationId" to observation.id,
+                "preferredOrder" to listOf(
+                    CropKind.LOWER_HALF,
+                    CropKind.LOWER_THIRD,
+                    CropKind.CENTER_CARD_AREA,
+                    CropKind.FLOATING_BOUNDS_EXPANDED,
+                    CropKind.FULL_DEBUG
+                ).joinToString(","),
+                "forcedCropKind" to forced?.kind
+            )
+        }
 
         val selected = forced ?: ranked.firstOrNull { it.valid }
         val fallbackCandidate = if (selected == null &&
             observation.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC
         ) {
-            ranked.firstOrNull { it.kind == CropKind.CENTER_CARD_AREA && it.largeEnough }
+            ranked.firstOrNull { it.kind == CropKind.LOWER_HALF && it.largeEnough }
+                ?: ranked.firstOrNull { it.kind == CropKind.LOWER_THIRD && it.largeEnough }
+                ?: ranked.firstOrNull { it.kind == CropKind.CENTER_CARD_AREA && it.largeEnough }
         } else {
             null
         }
@@ -230,8 +253,9 @@ class VisualOfferProbe(
         val reason = when {
             fallbackCandidate != null -> "accepted_by_strong_uber_dominant_signal"
             finalSelected == null -> "no_valid_crop_candidate"
-            forced?.kind == CropKind.CENTER_CARD_AREA -> "selected_by_trigger_priority_center_card_area"
             forced?.kind == CropKind.LOWER_HALF -> "selected_by_trigger_priority_lower_half"
+            forced?.kind == CropKind.LOWER_THIRD -> "selected_by_trigger_priority_lower_third"
+            forced?.kind == CropKind.CENTER_CARD_AREA -> "selected_by_trigger_priority_center_card_area"
             else -> "selected_by_score_after_priority"
         }
         val cropPriorityReason = when (observation.triggerSource) {
@@ -314,25 +338,25 @@ class VisualOfferProbe(
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC -> listOf(
                 CropKind.CENTER_CARD_AREA,
                 CropKind.LOWER_HALF,
-                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
                 CropKind.FLOATING_BOUNDS_EXPANDED,
-                CropKind.LOWER_THIRD
+                CropKind.LOWER_THIRD,
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC -> buildList {
-                add(CropKind.CENTER_CARD_AREA)
                 add(CropKind.LOWER_HALF)
-                add(CropKind.PLATFORM_SPECIFIC_CANDIDATE)
                 add(CropKind.LOWER_THIRD)
+                add(CropKind.CENTER_CARD_AREA)
                 if (observation.floatingKind != FloatingWindowKind.SYSTEM_UI_FLOATING) {
                     add(CropKind.FLOATING_BOUNDS_EXPANDED)
                 }
+                add(CropKind.PLATFORM_SPECIFIC_CANDIDATE)
             }
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> listOf(
                 CropKind.LOWER_HALF,
+                CropKind.LOWER_THIRD,
                 CropKind.CENTER_CARD_AREA,
-                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
                 CropKind.FLOATING_BOUNDS_EXPANDED,
-                CropKind.LOWER_THIRD
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
             TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> buildList {

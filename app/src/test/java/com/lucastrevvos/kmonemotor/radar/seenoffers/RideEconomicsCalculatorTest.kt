@@ -1,6 +1,7 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -50,5 +51,22 @@ class RideEconomicsCalculatorTest {
                 tripDistanceKm = null
             )
         )
+    }
+
+    @Test
+    fun ninetyNine_tinyMeterTripDoesNotOverrideLargerKmEconomicsWhenExplicitValuePerKmExists() {
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = RidePlatform.NINETY_NINE,
+            price = 21.40,
+            explicitValuePerKm = 1.30,
+            totalDistanceKm = 0.883,
+            pickupDistanceKm = 0.858,
+            tripDistanceKm = 0.025
+        )
+
+        assertEquals(16.46, resolved.totalDistanceKm ?: 0.0, 0.02)
+        assertEquals(1.30, resolved.valuePerKm ?: 0.0, 0.02)
+        assertTrue(resolved.warnings.contains("suspicious_meter_distance_probably_time"))
+        assertTrue(resolved.warnings.contains("total_distance_inferred_from_value_per_km"))
     }
 }

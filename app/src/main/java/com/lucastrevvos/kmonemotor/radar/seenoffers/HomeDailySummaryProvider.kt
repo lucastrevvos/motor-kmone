@@ -95,20 +95,25 @@ class HomeDailySummaryProvider(
     }
 
     private fun rideDistanceKm(ride: SavedRide): Double? {
-        return RideEconomicsCalculator.resolveTotalDistanceKm(
+        return RideEconomicsCalculator.resolveRideEconomics(
+            platform = ride.platform,
+            price = ride.price,
+            explicitValuePerKm = ride.valuePerKm,
             totalDistanceKm = ride.totalDistanceKm,
             pickupDistanceKm = ride.pickupDistanceKm,
             tripDistanceKm = ride.tripDistanceKm
-        )
+        ).totalDistanceKm
     }
 
     private fun rideValuePerKm(ride: SavedRide): Double? {
-        return RideEconomicsCalculator.calculateValuePerKm(
+        return RideEconomicsCalculator.resolveRideEconomics(
+            platform = ride.platform,
             price = ride.price,
+            explicitValuePerKm = ride.valuePerKm,
             totalDistanceKm = ride.totalDistanceKm,
             pickupDistanceKm = ride.pickupDistanceKm,
             tripDistanceKm = ride.tripDistanceKm
-        ) ?: ride.valuePerKm
+        ).valuePerKm
     }
 
     private fun Long.isSameDayAs(otherMs: Long, zoneId: ZoneId): Boolean {

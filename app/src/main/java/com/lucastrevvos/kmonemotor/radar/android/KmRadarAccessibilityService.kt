@@ -41,7 +41,6 @@ import com.lucastrevvos.kmonemotor.radar.ocr.OcrCandidate
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrDebugWriter
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrObservation
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrRunPolicy
-import com.lucastrevvos.kmonemotor.radar.ocr.rawTextPreview
 import com.lucastrevvos.kmonemotor.radar.orchestrator.ManualAnalysisContext
 import com.lucastrevvos.kmonemotor.radar.orchestrator.RadarCaptureOrchestrator
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
@@ -54,6 +53,7 @@ import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstPolicy
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureFrameFilter
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstScheduler
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureMicroBurstScheduler
+import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureMicroBurstTiming
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPersistenceProcessor
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPersistenceResult
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferOverlayPolicy
@@ -754,13 +754,21 @@ class KmRadarAccessibilityService : AccessibilityService() {
             candidates = candidates,
             nowMs = clock.nowMs()
         )
+        val recoveryReason = if (
+            visualResult.reason == "floating_obstruction_alternative_crop" &&
+            recoveryDecision.reason == "not_needed"
+        ) {
+            "alternative_crop_applied"
+        } else {
+            recoveryDecision.reason
+        }
         RadarLogger.i(
             "KM_V2_VISION",
             "KM_V2_AUTO_VISION_RECOVERY_EVALUATED",
             "observationId" to observation.id,
             "triggerSource" to observation.triggerSource,
             "visualReason" to visualResult.reason,
-            "recoveryReason" to recoveryDecision.reason
+            "recoveryReason" to recoveryReason
         )
         when (recoveryDecision.suppressionReason) {
             "cooldown_suppressed" -> {
@@ -807,7 +815,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
         }
         RadarDebugStore.updateAutomaticRecoverySummary(
             applied = recoveryDecision.recoveryApplied || recoveryDecision.overridePostTransition,
-            reason = recoveryDecision.reason,
+            reason = recoveryReason,
             cropKind = recoveryDecision.selectedCandidate?.kind?.name,
             postTransitionOverridden = recoveryDecision.overridePostTransition,
             suppressedReason = recoveryDecision.suppressionReason
@@ -851,6 +859,25 @@ class KmRadarAccessibilityService : AccessibilityService() {
             obstructionResult = result,
             obstructionAction = result.suggestedAction
         )
+        val selectedCandidate = visualResult.bestCandidate
+        if (
+            observation.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
+            selectedCandidate?.kind == CropKind.LOWER_HALF &&
+            result.detected &&
+            result.overlapsCriticalOfferArea &&
+            result.obstructionRect != null &&
+            !rectsIntersect(selectedCandidate.rect, result.obstructionRect)
+        ) {
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_UBER_DOMINANT_OBSTRUCTION_OVERRIDE_BLOCKED",
+                "observationId" to observation.id,
+                "originalSelectedCropKind" to selectedCandidate.kind,
+                "attemptedAlternativeCropKind" to CropKind.FLOATING_BOUNDS_EXPANDED,
+                "obstructionRect" to result.obstructionRect.flattenToString(),
+                "reason" to "lower_half_safe_keep_priority"
+            )
+        }
         return result
     }
 
@@ -882,6 +909,15 @@ class KmRadarAccessibilityService : AccessibilityService() {
             "toCropKind" to alternativeCandidate.kind,
             "reason" to "floating_bounds_expanded_obstructed"
         )
+        if (observation.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC) {
+            RadarLogger.i(
+                "KM_V2_VISION",
+                "KM_V2_UBER_DOMINANT_OBSTRUCTION_ALTERNATIVE_SELECTED",
+                "observationId" to observation.id,
+                "selectedAlternativeCropKind" to alternativeCandidate.kind,
+                "reason" to "floating_bounds_expanded_obstructed"
+            )
+        }
         updateAutomaticCaptureSource(
             observationId = observation.id,
             selectedCropKind = alternativeCandidate.kind,
@@ -906,9 +942,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
         val preferredKinds = when (observation.triggerSource) {
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC,
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC -> listOf(
+                CropKind.LOWER_HALF,
+                CropKind.LOWER_THIRD,
                 CropKind.CENTER_CARD_AREA,
-                CropKind.PLATFORM_SPECIFIC_CANDIDATE,
-                CropKind.LOWER_HALF
+                CropKind.FLOATING_BOUNDS_EXPANDED,
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> listOf(
                 CropKind.LOWER_HALF,
@@ -930,6 +968,10 @@ class KmRadarAccessibilityService : AccessibilityService() {
                         candidate.id != selectedCandidate.id &&
                         candidate.width >= 40 &&
                         candidate.height >= 40 &&
+                        candidateSafeFromObstruction(
+                            candidate = candidate,
+                            obstructionRect = floatingObstructionByObservationId[observation.id]?.obstructionRect
+                        ) &&
                         probeByCropId[candidate.id]?.rejectionReason == null
                 }
             }
@@ -1718,7 +1760,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
         if (observation.metadata.notes.containsKey("autoInitialMicroBurstSourceObservationId")) return
         if (burstContextByObservationId.containsKey(observation.id)) return
         if (initialMicroBurstStateBySourceId.containsKey(observation.id)) return
-        val frameDelays = listOf(0L, 200L, 450L)
+        val frameDelays = initialMicroBurstFrameDelays(observation.triggerSource)
         initialMicroBurstStateBySourceId[observation.id] = AutoInitialMicroBurstState(
             sourceObservation = observation,
             frameDelaysMs = frameDelays,
@@ -1748,26 +1790,60 @@ class KmRadarAccessibilityService : AccessibilityService() {
 
     private fun scheduleNextInitialMicroBurstFrame(sourceObservationId: String) {
         val state = initialMicroBurstStateBySourceId[sourceObservationId] ?: return
-        if (state.offerLikeFound || state.activeFrameIndex != null) return
+        if (state.offerLikeFound || state.finished) return
         val nextFrameIndex = (1 until state.frameDelaysMs.size).firstOrNull { frameIndex ->
-            frameIndex !in state.completedFrames && frameIndex !in state.scheduledFrames
+            frameIndex !in state.completedFrames &&
+                automaticCaptureMicroBurstScheduler.currentState(sourceObservationId, frameIndex) !in setOf(
+                    AutomaticCaptureMicroBurstScheduler.FrameState.PENDING,
+                    AutomaticCaptureMicroBurstScheduler.FrameState.RUNNING,
+                    AutomaticCaptureMicroBurstScheduler.FrameState.RETRYING
+                )
         } ?: return
         val targetDelayMs = state.frameDelaysMs[nextFrameIndex]
-        val delayMs = (state.startedAtMs + targetDelayMs - clock.nowMs()).coerceAtLeast(0L)
-        state.scheduledFrames += nextFrameIndex
-        automaticCaptureMicroBurstScheduler.schedule(
+        val delayMs = (maxOf(state.startedAtMs + targetDelayMs, state.nextAllowedAtMs) - clock.nowMs()).coerceAtLeast(0L)
+        val scheduled = automaticCaptureMicroBurstScheduler.schedule(
             sourceObservationId = sourceObservationId,
             frameIndex = nextFrameIndex,
             delayMs = delayMs
         ) {
             val refreshedState = initialMicroBurstStateBySourceId[sourceObservationId] ?: return@schedule
-            if (refreshedState.offerLikeFound) return@schedule
-            refreshedState.scheduledFrames.remove(nextFrameIndex)
-            refreshedState.activeFrameIndex = nextFrameIndex
+            if (refreshedState.offerLikeFound || refreshedState.finished) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_CANCELLED_BURST_ALREADY_FINISHED",
+                    "sourceObservationId" to sourceObservationId,
+                    "frameIndex" to nextFrameIndex
+                )
+                automaticCaptureMicroBurstScheduler.markState(
+                    sourceObservationId,
+                    nextFrameIndex,
+                    AutomaticCaptureMicroBurstScheduler.FrameState.CANCELLED
+                )
+                return@schedule
+            }
+            if (!automaticCaptureMicroBurstScheduler.markRunning(sourceObservationId, nextFrameIndex)) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_SKIPPED_ALREADY_RUNNING",
+                    "sourceObservationId" to sourceObservationId,
+                    "frameIndex" to nextFrameIndex,
+                    "state" to automaticCaptureMicroBurstScheduler.currentState(sourceObservationId, nextFrameIndex)
+                )
+                return@schedule
+            }
             executeInitialMicroBurstFrame(
                 sourceObservation = refreshedState.sourceObservation,
                 frameIndex = nextFrameIndex,
                 delayMs = delayMs
+            )
+        }
+        if (!scheduled) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_SKIPPED_ALREADY_RUNNING",
+                "sourceObservationId" to sourceObservationId,
+                "frameIndex" to nextFrameIndex,
+                "state" to automaticCaptureMicroBurstScheduler.currentState(sourceObservationId, nextFrameIndex)
             )
         }
     }
@@ -1780,13 +1856,17 @@ class KmRadarAccessibilityService : AccessibilityService() {
         val state = initialMicroBurstStateBySourceId[sourceObservation.id] ?: return false
         val currentRetries = state.retryCountByFrame[frameIndex] ?: 0
         if (currentRetries >= 1) return false
-        val retryDelayMs = 180L
+        val retryDelayMs = AutomaticCaptureMicroBurstTiming.busyRetryDelayMs()
         if (clock.nowMs() + retryDelayMs > state.startedAtMs + state.maxDurationMs) {
             return false
         }
         state.retryCountByFrame[frameIndex] = currentRetries + 1
-        state.activeFrameIndex = null
-        state.scheduledFrames += frameIndex
+        state.nextAllowedAtMs = maxOf(state.nextAllowedAtMs, clock.nowMs() + retryDelayMs)
+        automaticCaptureMicroBurstScheduler.markState(
+            sourceObservation.id,
+            frameIndex,
+            AutomaticCaptureMicroBurstScheduler.FrameState.FAILED
+        )
         RadarLogger.i(
             "KM_V2_AUTO",
             "KM_V2_AUTO_INITIAL_MICRO_BURST_RETRY_SCHEDULED",
@@ -1795,22 +1875,53 @@ class KmRadarAccessibilityService : AccessibilityService() {
             "delayMs" to retryDelayMs,
             "reason" to reason
         )
-        automaticCaptureMicroBurstScheduler.schedule(
+        val scheduled = automaticCaptureMicroBurstScheduler.schedule(
             sourceObservationId = sourceObservation.id,
             frameIndex = frameIndex,
-            delayMs = retryDelayMs
+            delayMs = retryDelayMs,
+            state = AutomaticCaptureMicroBurstScheduler.FrameState.RETRYING
         ) {
             val refreshedState = initialMicroBurstStateBySourceId[sourceObservation.id] ?: return@schedule
-            if (refreshedState.offerLikeFound) return@schedule
-            refreshedState.scheduledFrames.remove(frameIndex)
-            refreshedState.activeFrameIndex = frameIndex
+            if (refreshedState.offerLikeFound || refreshedState.finished) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_CANCELLED_BURST_ALREADY_FINISHED",
+                    "sourceObservationId" to sourceObservation.id,
+                    "frameIndex" to frameIndex
+                )
+                automaticCaptureMicroBurstScheduler.markState(
+                    sourceObservation.id,
+                    frameIndex,
+                    AutomaticCaptureMicroBurstScheduler.FrameState.CANCELLED
+                )
+                return@schedule
+            }
+            if (!automaticCaptureMicroBurstScheduler.markRunning(sourceObservation.id, frameIndex)) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_SKIPPED_ALREADY_RUNNING",
+                    "sourceObservationId" to sourceObservation.id,
+                    "frameIndex" to frameIndex,
+                    "state" to automaticCaptureMicroBurstScheduler.currentState(sourceObservation.id, frameIndex)
+                )
+                return@schedule
+            }
             executeInitialMicroBurstFrame(
                 sourceObservation = refreshedState.sourceObservation,
                 frameIndex = frameIndex,
                 delayMs = retryDelayMs
             )
         }
-        return true
+        if (!scheduled) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_SKIPPED_ALREADY_RUNNING",
+                "sourceObservationId" to sourceObservation.id,
+                "frameIndex" to frameIndex,
+                "state" to automaticCaptureMicroBurstScheduler.currentState(sourceObservation.id, frameIndex)
+            )
+        }
+        return scheduled
     }
 
     private fun executeInitialMicroBurstFrame(
@@ -1819,7 +1930,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
         delayMs: Long
     ) {
         val state = initialMicroBurstStateBySourceId[sourceObservation.id] ?: return
-        if (state.offerLikeFound) return
+        if (state.offerLikeFound || state.finished) return
         if (serviceDestroyed.get()) {
             completeInitialMicroBurstFailure(
                 sourceObservationId = sourceObservation.id,
@@ -1847,7 +1958,6 @@ class KmRadarAccessibilityService : AccessibilityService() {
         screenshotCapturer.capture(
             request = request,
             onSuccess = { burstRequest, result ->
-                initialMicroBurstStateBySourceId[sourceObservation.id]?.activeFrameIndex = null
                 val baseObservation = screenObservationFactory.create(burstRequest, result)
                 val enrichedObservation = baseObservation.copy(
                     metadata = baseObservation.metadata.copy(
@@ -1864,7 +1974,6 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 onObservationCreated(enrichedObservation, result)
             },
             onFailure = { _, error, errorCode, _, _, _ ->
-                initialMicroBurstStateBySourceId[sourceObservation.id]?.activeFrameIndex = null
                 val busyReason = if (errorCode == 3 || error.contains("code_3")) {
                     resolveInitialMicroBurstBusyReason()
                 } else {
@@ -1890,6 +1999,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 ) {
                     return@capture
                 }
+                automaticCaptureMicroBurstScheduler.markState(
+                    sourceObservation.id,
+                    frameIndex,
+                    AutomaticCaptureMicroBurstScheduler.FrameState.FAILED
+                )
                 completeInitialMicroBurstFailure(
                     sourceObservationId = sourceObservation.id,
                     frameIndex = frameIndex,
@@ -1982,6 +2096,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
             )
         }
         state.completedFrames += frameContext.frameIndex
+        automaticCaptureMicroBurstScheduler.markState(
+            frameContext.sourceObservationId,
+            frameContext.frameIndex,
+            AutomaticCaptureMicroBurstScheduler.FrameState.DONE
+        )
         if (selfOverlayContaminated) {
             RadarLogger.i(
                 "KM_V2_AUTO",
@@ -1991,6 +2110,21 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "frameIndex" to frameContext.frameIndex,
                 "fingerprintKind" to fingerprint?.kind
             )
+            if (frameContext.frameIndex == 0) {
+                val cooldownStartedAtMs = clock.nowMs()
+                val cooldownUntilMs = AutomaticCaptureMicroBurstTiming.applySelfOverlayCooldown(cooldownStartedAtMs)
+                state.nextAllowedAtMs = maxOf(state.nextAllowedAtMs, cooldownUntilMs)
+                val cancelled = automaticCaptureMicroBurstScheduler.cancelPending(frameContext.sourceObservationId)
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_INITIAL_MICRO_BURST_COOLDOWN_APPLIED",
+                    "sourceObservationId" to frameContext.sourceObservationId,
+                    "reason" to "self_overlay_aborted",
+                    "cooldownMs" to (cooldownUntilMs - cooldownStartedAtMs),
+                    "cancelledPendingFrames" to cancelled
+                )
+                scheduleNextInitialMicroBurstFrame(frameContext.sourceObservationId)
+            }
         }
         if (
             !state.offerLikeFound &&
@@ -2018,6 +2152,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     "reason" to "offer_like_found"
                 )
             }
+            state.finished = true
             initialMicroBurstStateBySourceId.remove(frameContext.sourceObservationId)
             return
         }
@@ -2028,6 +2163,8 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "sourceObservationId" to frameContext.sourceObservationId,
                 "reason" to (fingerprint?.reason ?: "all_frames_failed")
             )
+            state.finished = true
+            automaticCaptureMicroBurstScheduler.cancelPending(frameContext.sourceObservationId)
             initialMicroBurstStateBySourceId.remove(frameContext.sourceObservationId)
         }
     }
@@ -2039,6 +2176,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
     ) {
         val state = initialMicroBurstStateBySourceId[sourceObservationId] ?: return
         state.completedFrames += frameIndex
+        automaticCaptureMicroBurstScheduler.markState(
+            sourceObservationId,
+            frameIndex,
+            AutomaticCaptureMicroBurstScheduler.FrameState.FAILED
+        )
         RadarLogger.i(
             "KM_V2_AUTO",
             "KM_V2_AUTO_INITIAL_MICRO_BURST_FRAME_RESULT",
@@ -2062,8 +2204,14 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "sourceObservationId" to sourceObservationId,
                 "reason" to reason
             )
+            state.finished = true
+            automaticCaptureMicroBurstScheduler.cancelPending(sourceObservationId)
             initialMicroBurstStateBySourceId.remove(sourceObservationId)
         }
+    }
+
+    private fun initialMicroBurstFrameDelays(triggerSource: TriggerSource): List<Long> {
+        return AutomaticCaptureMicroBurstTiming.frameDelaysMs(triggerSource)
     }
 
     private fun logOfferPipelineFinalResult(
@@ -2148,6 +2296,19 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "rawOcrText" to observation.rawTextPreview(),
                 "fingerprintReason" to fingerprint.reason
             )
+            if (
+                context?.originalTriggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
+                observation.cropKind == CropKind.LOWER_HALF
+            ) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_UBER_DOMINANT_LOWER_HALF_RESULT",
+                    "observationId" to observation.observationId,
+                    "sourceObservationId" to sourceObservationId,
+                    "fingerprintKind" to fingerprint.kind,
+                    "rawTextPreview" to observation.rawTextPreview()
+                )
+            }
             RadarDebugStore.updateAutoBurstSummary(
                 attempt = attempt,
                 result = fingerprint.kind.name.lowercase()
@@ -2274,6 +2435,17 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "fromCropKind" to observation.cropKind,
                 "fallbackCropKind" to decision.preferredCropOrder.firstOrNull(),
                 "reason" to decision.reason
+            )
+        }
+        if (decision.reason == "dominant_center_unknown_retry_lower_half") {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_UBER_DOMINANT_CENTER_UNKNOWN_RETRY_LOWER_HALF",
+                "observationId" to observation.observationId,
+                "fromCropKind" to observation.cropKind,
+                "fallbackCropKind" to decision.preferredCropOrder.firstOrNull(),
+                "rawTextPreview" to observation.rawTextPreview(),
+                "fingerprintKind" to fingerprint.kind
             )
         }
         val replacedToken = automaticCaptureBurstScheduler.schedule(
@@ -2480,9 +2652,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
         val startedAtMs: Long,
         val maxDurationMs: Long = 800L,
         val completedFrames: MutableSet<Int> = mutableSetOf(),
-        val scheduledFrames: MutableSet<Int> = mutableSetOf(),
         val retryCountByFrame: MutableMap<Int, Int> = mutableMapOf(),
-        var activeFrameIndex: Int? = null,
+        var nextAllowedAtMs: Long = startedAtMs,
+        var finished: Boolean = false,
         var offerLikeFound: Boolean = false,
         var bestObservationId: String? = null
     )
@@ -2513,4 +2685,19 @@ class KmRadarAccessibilityService : AccessibilityService() {
         val alternativeCropApplied: Boolean = false,
         val originalCropKind: CropKind? = null
     )
+
+    private fun candidateSafeFromObstruction(candidate: CropCandidate, obstructionRect: Rect?): Boolean {
+        return obstructionRect == null || !rectsIntersect(candidate.rect, obstructionRect)
+    }
+
+    private fun rectsIntersect(first: Rect, second: Rect): Boolean {
+        return first.left < second.right &&
+            second.left < first.right &&
+            first.top < second.bottom &&
+            second.top < first.bottom
+    }
+
+    private fun OcrObservation.rawTextPreview(maxLength: Int = 120): String {
+        return rawText.replace("\n", " ").trim().take(maxLength)
+    }
 }

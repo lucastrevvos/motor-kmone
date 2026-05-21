@@ -37,8 +37,8 @@ class RecordsSummaryProviderTest {
     fun daySummary_calculatesTotalKmAndAverage() {
         val nowMs = 1_715_000_000_000L
         val rides = listOf(
-            ride(id = "1", acceptedAtMs = nowMs, price = 20.0, totalDistanceKm = 10.0),
-            ride(id = "2", acceptedAtMs = nowMs - 60_000L, price = 30.0, totalDistanceKm = 15.0)
+            ride(id = "1", acceptedAtMs = nowMs, price = 20.0, pickupDistanceKm = 2.0, tripDistanceKm = 8.0, totalDistanceKm = 10.0),
+            ride(id = "2", acceptedAtMs = nowMs - 60_000L, price = 30.0, pickupDistanceKm = 3.0, tripDistanceKm = 12.0, totalDistanceKm = 15.0)
         )
 
         val summary = provider.summarize(rides = rides, period = RecordsPeriodFilter.DAY, nowMs = nowMs)
@@ -115,6 +115,8 @@ class RecordsSummaryProviderTest {
                     id = "manual-1",
                     acceptedAtMs = nowMs,
                     price = 30.0,
+                    pickupDistanceKm = 2.0,
+                    tripDistanceKm = 8.0,
                     totalDistanceKm = 10.0,
                     source = SavedRideSource.MANUAL_ENTRY
                 )
@@ -158,6 +160,8 @@ class RecordsSummaryProviderTest {
         id: String,
         acceptedAtMs: Long,
         price: Double? = 10.0,
+        pickupDistanceKm: Double? = 1.0,
+        tripDistanceKm: Double? = 3.0,
         totalDistanceKm: Double? = 4.0,
         source: SavedRideSource = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
     ) = SavedRide(
@@ -166,9 +170,9 @@ class RecordsSummaryProviderTest {
         platform = RidePlatform.UBER,
         price = price,
         valuePerKm = null,
-        pickupDistanceKm = 1.0,
+        pickupDistanceKm = pickupDistanceKm,
         pickupTimeMin = 3.0,
-        tripDistanceKm = 3.0,
+        tripDistanceKm = tripDistanceKm,
         tripTimeMin = 8.0,
         totalDistanceKm = totalDistanceKm,
         estimatedTotalTimeMin = 11.0,

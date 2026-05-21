@@ -1,6 +1,8 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 data class SeenOfferUiModel(
@@ -24,17 +26,14 @@ class SeenOfferUiMapper(
     fun map(offer: SeenOffer): SeenOfferUiModel {
         val audit = auditor.audit(offer)
         val normalized = audit.normalizedOffer
-        val resolvedKm = RideEconomicsCalculator.resolveTotalDistanceKm(
+        val economics = RideEconomicsCalculator.resolveRideEconomics(
+            platform = normalized.platform,
+            price = normalized.price,
+            explicitValuePerKm = normalized.valuePerKm,
             totalDistanceKm = normalized.totalDistanceKm,
             pickupDistanceKm = normalized.pickupDistanceKm,
             tripDistanceKm = normalized.tripDistanceKm
         )
-        val displayedValuePerKm = RideEconomicsCalculator.calculateValuePerKm(
-            price = normalized.price,
-            totalDistanceKm = normalized.totalDistanceKm,
-            pickupDistanceKm = normalized.pickupDistanceKm,
-            tripDistanceKm = normalized.tripDistanceKm
-        ) ?: normalized.valuePerKm
 
         RadarLogger.i(
             "KM_V2_SEEN",
@@ -44,20 +43,22 @@ class SeenOfferUiMapper(
             "pickupDistanceKm" to normalized.pickupDistanceKm,
             "tripDistanceKm" to normalized.tripDistanceKm,
             "rawTotalDistanceKm" to offer.totalDistanceKm,
-            "resolvedKm" to resolvedKm,
-            "displayedValuePerKm" to displayedValuePerKm
+            "resolvedKm" to economics.totalDistanceKm,
+            "displayedValuePerKm" to economics.valuePerKm
         )
 
         return SeenOfferUiModel(
             id = offer.id,
             platformLabel = platformLabel(normalized.platform),
-            productName = normalized.productName?.takeUnless { it.equals(platformLabel(normalized.platform), ignoreCase = true) },
+            productName = normalized.productName?.takeUnless {
+                it.equals(platformLabel(normalized.platform), ignoreCase = true)
+            },
             priceLabel = formatMoney(normalized.price),
             timeLabel = formatTime(normalized.createdAtMs),
-            valuePerKmLabel = displayedValuePerKm?.let(::formatPerKm) ?: "R$/km —",
-            pickupLabel = formatMetric(normalized.pickupTimeMin, normalized.pickupDistanceKm),
-            tripLabel = formatMetric(normalized.tripTimeMin, normalized.tripDistanceKm),
-            totalDistanceLabel = resolvedKm?.let(::formatKm) ?: "—",
+            valuePerKmLabel = economics.valuePerKm?.let(::formatPerKm) ?: "R$/km —",
+            pickupLabel = formatMetric(normalized.pickupTimeMin, economics.pickupDistanceKm),
+            tripLabel = formatMetric(normalized.tripTimeMin, economics.tripDistanceKm),
+            totalDistanceLabel = economics.totalDistanceKm?.let(::formatKm) ?: "—",
             originPreview = normalized.originPreview ?: "—",
             destinationPreview = normalized.destinationPreview ?: "—",
             warnings = audit.warnings
@@ -92,7 +93,6 @@ class SeenOfferUiMapper(
     }
 
     private fun formatTime(timestampMs: Long): String {
-        val date = java.text.SimpleDateFormat("HH:mm", Locale.forLanguageTag("pt-BR"))
-        return date.format(java.util.Date(timestampMs))
+        return SimpleDateFormat("HH:mm", Locale.forLanguageTag("pt-BR")).format(Date(timestampMs))
     }
 }

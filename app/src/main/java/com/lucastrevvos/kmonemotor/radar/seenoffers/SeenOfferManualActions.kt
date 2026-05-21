@@ -11,22 +11,37 @@ class SeenOfferManualActions(
     fun acceptSeenOfferManually(seenOfferId: String): SavedRide? {
         val seenOffer = seenOfferRepository.getSeenOfferById(seenOfferId) ?: return null
         val nowMs = nowMsProvider()
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = seenOffer.platform,
+            price = seenOffer.price,
+            explicitValuePerKm = seenOffer.valuePerKm,
+            totalDistanceKm = seenOffer.totalDistanceKm,
+            pickupDistanceKm = seenOffer.pickupDistanceKm,
+            tripDistanceKm = seenOffer.tripDistanceKm
+        )
+        RadarLogger.i(
+            "KM_V2_SEEN",
+            "KM_V2_SAVED_OFFER_ECONOMICS_RESOLVED",
+            "observationId" to seenOffer.observationId,
+            "platform" to seenOffer.platform,
+            "price" to seenOffer.price,
+            "pickupDistanceKm" to resolved.pickupDistanceKm,
+            "tripDistanceKm" to resolved.tripDistanceKm,
+            "totalDistanceKm" to resolved.totalDistanceKm,
+            "valuePerKm" to resolved.valuePerKm,
+            "warnings" to resolved.warnings.joinToString(",")
+        )
         val ride = SavedRide(
             id = UUID.randomUUID().toString(),
             sourceSeenOfferId = seenOffer.id,
             platform = seenOffer.platform,
             price = seenOffer.price,
-            valuePerKm = RideEconomicsCalculator.calculateValuePerKm(
-                price = seenOffer.price,
-                totalDistanceKm = seenOffer.totalDistanceKm,
-                pickupDistanceKm = seenOffer.pickupDistanceKm,
-                tripDistanceKm = seenOffer.tripDistanceKm
-            ) ?: seenOffer.valuePerKm,
-            pickupDistanceKm = seenOffer.pickupDistanceKm,
+            valuePerKm = resolved.valuePerKm,
+            pickupDistanceKm = resolved.pickupDistanceKm,
             pickupTimeMin = seenOffer.pickupTimeMin,
-            tripDistanceKm = seenOffer.tripDistanceKm,
+            tripDistanceKm = resolved.tripDistanceKm,
             tripTimeMin = seenOffer.tripTimeMin,
-            totalDistanceKm = seenOffer.totalDistanceKm,
+            totalDistanceKm = resolved.totalDistanceKm,
             estimatedTotalTimeMin = seenOffer.estimatedTotalTimeMin,
             productName = seenOffer.productName,
             originPreview = seenOffer.originPreview,

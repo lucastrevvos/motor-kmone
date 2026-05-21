@@ -62,7 +62,15 @@ class AutomaticCaptureBurstPolicy(
                 shouldScheduleBurst = true,
                 delayMs = min(config.delayMs, config.maxDelayMs),
                 preferredCropOrder = preferredCropOrder(input.triggerSource),
-                reason = "unknown_probable_offer_context"
+                reason = if (
+                    input.triggerSource == TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
+                    input.cropKind == CropKind.CENTER_CARD_AREA &&
+                    shouldForceLowerHalfRetry(input.rawOcrText)
+                ) {
+                    "dominant_center_unknown_retry_lower_half"
+                } else {
+                    "unknown_probable_offer_context"
+                }
             )
         }
         if (
@@ -118,21 +126,32 @@ class AutomaticCaptureBurstPolicy(
         return false
     }
 
+    private fun shouldForceLowerHalfRetry(rawText: String): Boolean {
+        if (rawText.isBlank()) return true
+        val normalized = rawText.lowercase()
+        val noPrices = !normalized.contains("r$")
+        val noDistances = !normalized.contains("km") && !normalized.contains(" m")
+        val noProduct = !normalized.contains("uberx") && !normalized.contains("comfort") && !normalized.contains("black")
+        return looksLikeMapOrHomeContamination(rawText) || (noPrices && noDistances && noProduct)
+    }
+
     private fun preferredCropOrder(triggerSource: TriggerSource): List<CropKind> {
         return when (triggerSource) {
             TriggerSource.UBER_FLOATING_OVER_99_DIAGNOSTIC -> listOf(
                 CropKind.LOWER_HALF,
                 CropKind.CENTER_CARD_AREA,
+                CropKind.FLOATING_BOUNDS_EXPANDED,
                 CropKind.LOWER_THIRD,
-                CropKind.FLOATING_BOUNDS_EXPANDED
+                CropKind.FULL_DEBUG
             )
 
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> listOf(
                 CropKind.LOWER_HALF,
-                CropKind.CENTER_CARD_AREA,
                 CropKind.LOWER_THIRD,
-                CropKind.FLOATING_BOUNDS_EXPANDED
+                CropKind.CENTER_CARD_AREA,
+                CropKind.FLOATING_BOUNDS_EXPANDED,
+                CropKind.FULL_DEBUG
             )
 
             else -> emptyList()

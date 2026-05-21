@@ -62,8 +62,8 @@ class HomeDailySummaryProviderTest {
         val summary = provider.summarize(
             seenOffers = emptyList(),
             savedRides = listOf(
-                savedRide("ride-1", price = 30.0, totalDistanceKm = 10.0, acceptedAtMs = nowMs),
-                savedRide("ride-2", price = 20.0, totalDistanceKm = 5.0, acceptedAtMs = nowMs)
+                savedRide("ride-1", price = 30.0, pickupDistanceKm = 2.0, tripDistanceKm = 8.0, totalDistanceKm = 10.0, acceptedAtMs = nowMs),
+                savedRide("ride-2", price = 20.0, pickupDistanceKm = 1.0, tripDistanceKm = 4.0, totalDistanceKm = 5.0, acceptedAtMs = nowMs)
             ),
             nowMs = nowMs
         )
@@ -173,6 +173,8 @@ class HomeDailySummaryProviderTest {
     private fun savedRide(
         id: String,
         price: Double?,
+        pickupDistanceKm: Double? = 1.0,
+        tripDistanceKm: Double? = 3.0,
         totalDistanceKm: Double?,
         acceptedAtMs: Long
     ) = SavedRide(
@@ -181,9 +183,9 @@ class HomeDailySummaryProviderTest {
         platform = RidePlatform.UBER,
         price = price,
         valuePerKm = null,
-        pickupDistanceKm = 1.0,
+        pickupDistanceKm = pickupDistanceKm,
         pickupTimeMin = 4.0,
-        tripDistanceKm = 3.0,
+        tripDistanceKm = tripDistanceKm,
         tripTimeMin = 7.0,
         totalDistanceKm = totalDistanceKm,
         estimatedTotalTimeMin = 11.0,
