@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,4 +42,93 @@ class SeenOfferPresentationFactoryTest {
         assertTrue(presentation.details.any { it.contains("Busca: 8 min / 1,9 km") })
         assertTrue(presentation.details.any { it.contains("Corrida: 21 min / 14,0 km") })
     }
+
+    @Test
+    fun manualReshow_recomputesValuePerKmWhenMissingFromSavedOffer() {
+        val presentation = factory.buildFromSeenOffer(
+            seenOffer = seenOffer(
+                price = 18.41,
+                valuePerKm = null,
+                pickupDistanceKm = 5.6,
+                tripDistanceKm = 11.7,
+                totalDistanceKm = 17.3
+            ),
+            createdAtMs = 2_000L
+        )
+
+        assertTrue(presentation.primaryMetric?.contains("1,06") == true)
+        assertTrue(presentation.secondaryMetric?.contains("17,3") == true)
+    }
+
+    @Test
+    fun manualReshow_recomputesTotalFromPickupAndTripWhenMissing() {
+        val presentation = factory.buildFromSeenOffer(
+            seenOffer = seenOffer(
+                price = 18.41,
+                valuePerKm = null,
+                pickupDistanceKm = 5.6,
+                tripDistanceKm = 11.7,
+                totalDistanceKm = null
+            ),
+            createdAtMs = 2_000L
+        )
+
+        assertTrue(presentation.secondaryMetric?.contains("17,3") == true)
+        assertTrue(presentation.details.any { it.contains("Busca: 7 min / 5,6 km") })
+        assertTrue(presentation.details.any { it.contains("Corrida: 17 min / 11,7 km") })
+    }
+
+    @Test
+    fun manualReshow_usesSavedOfferDetailsInsteadOfPartialManualObservation() {
+        val presentation = factory.buildFromSeenOffer(
+            seenOffer = seenOffer(
+                price = 18.41,
+                valuePerKm = 1.06,
+                pickupDistanceKm = 5.6,
+                tripDistanceKm = 11.7,
+                totalDistanceKm = 17.3,
+                originPreview = "Origem salva",
+                destinationPreview = "Destino salvo"
+            ),
+            createdAtMs = 2_000L
+        )
+
+        assertEquals("Oferta ja registrada", presentation.title)
+        assertTrue(presentation.priceText?.contains("18,41") == true)
+        assertTrue(presentation.details.any { it.contains("Origem: Origem salva") })
+        assertTrue(presentation.details.any { it.contains("Destino: Destino salvo") })
+    }
+
+    private fun seenOffer(
+        price: Double,
+        valuePerKm: Double?,
+        pickupDistanceKm: Double?,
+        tripDistanceKm: Double?,
+        totalDistanceKm: Double?,
+        originPreview: String? = "Origem",
+        destinationPreview: String? = "Destino"
+    ) = SeenOffer(
+        id = "seen-1",
+        observationId = "obs-1",
+        platform = RidePlatform.UBER,
+        sourceTrigger = "UBER_DOMINANT_OFFER_DIAGNOSTIC",
+        status = SeenOfferStatus.SEEN,
+        price = price,
+        valuePerKm = valuePerKm,
+        pickupDistanceKm = pickupDistanceKm,
+        pickupTimeMin = 7.0,
+        tripDistanceKm = tripDistanceKm,
+        tripTimeMin = 17.0,
+        totalDistanceKm = totalDistanceKm,
+        estimatedTotalTimeMin = 24.0,
+        productName = "UberX",
+        originPreview = originPreview,
+        destinationPreview = destinationPreview,
+        rawTextPreview = "UberX R$ 18,41 7 min (5,6 km) 17 minutos (11,7 km)",
+        score = 10,
+        rawTextHash = "hash",
+        routeTextHash = "route",
+        createdAtMs = 1_000L,
+        updatedAtMs = 1_000L
+    )
 }

@@ -222,6 +222,33 @@ class VisualOfferProbeTest {
     }
 
     @Test
+    fun preOfferWatchdog_prefersFloatingBoundsExpanded() {
+        val observation = observation(
+            triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+            metadata = ObservationMetadata(
+                notes = mapOf(
+                    "preOfferWatchdogPreferredCropOrder" to "FLOATING_BOUNDS_EXPANDED,LOWER_HALF,LOWER_THIRD,CENTER_CARD_AREA"
+                )
+            )
+        )
+        val candidates = listOf(
+            candidate("float", CropKind.FLOATING_BOUNDS_EXPANDED),
+            candidate("lower", CropKind.LOWER_HALF),
+            candidate("center", CropKind.CENTER_CARD_AREA)
+        )
+        val results = listOf(
+            result("float", CropKind.FLOATING_BOUNDS_EXPANDED, score = 5),
+            result("lower", CropKind.LOWER_HALF, score = 9),
+            result("center", CropKind.CENTER_CARD_AREA, score = 8)
+        )
+
+        val ranking = probe.rankCandidates(observation, candidates, results)
+
+        assertEquals(CropKind.FLOATING_BOUNDS_EXPANDED, ranking.bestCandidate?.kind)
+        assertEquals("selected_by_score_after_priority", ranking.reason)
+    }
+
+    @Test
     fun noValidCandidate_returnsNullBestCandidate() {
         val observation = observation(triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE)
         val candidates = listOf(candidate("full", CropKind.FULL_DEBUG))

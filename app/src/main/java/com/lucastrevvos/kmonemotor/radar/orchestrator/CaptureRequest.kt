@@ -20,6 +20,7 @@ data class CaptureRequest(
     val floatingKind: FloatingWindowKind,
     val reason: String,
     val offerCycleClassification: OfferCycleClassification? = null,
+    val metadataNotes: Map<String, String> = emptyMap(),
     val analysisEpoch: Long = 0L,
     val isManual: Boolean = false,
     val manualReason: String? = null

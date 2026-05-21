@@ -302,6 +302,92 @@ class SeenOfferRepositoriesTest {
     }
 
     @Test
+    fun recentRecoveryFrameWithStrong99Signals_mergesWithRecentNinetyNineOffer() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "saved-99",
+                observationId = "obs-99",
+                platform = RidePlatform.NINETY_NINE,
+                price = 12.73,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = 8.9,
+                totalDistanceKm = 10.5,
+                sourceTrigger = "UBER_FLOATING_OVER_99_DIAGNOSTIC",
+                createdAtMs = 1_000L
+            ).copy(
+                valuePerKm = 1.22,
+                rawTextPreview = "Negocia Dinheiro Corrida longa R$12,73 R$1,22/km 4min (1,6km) 10min (8,9km)",
+                productName = "99"
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "recovery-uber",
+                observationId = "obs-recovery",
+                platform = RidePlatform.UBER,
+                price = 12.73,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = 8.9,
+                totalDistanceKm = 10.5,
+                sourceTrigger = "UBER_AUTO_BURST_RECOVERY",
+                createdAtMs = 5_000L
+            ).copy(
+                valuePerKm = 1.22,
+                rawTextPreview = "4,87 180 corridas R$1,22/km CPF e Cartao verif. 4min (1,6km) 10min (8,9km)"
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals(RidePlatform.NINETY_NINE, repo.listSeenOffers().first().platform)
+    }
+
+    @Test
+    fun recentManualEnviosCaptures_mergeAsSameUberOffer() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "manual-1",
+                observationId = "obs-manual-1",
+                platform = RidePlatform.UNKNOWN,
+                price = 10.30,
+                pickupDistanceKm = 5.4,
+                tripDistanceKm = 6.7,
+                totalDistanceKm = 12.1,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 1_000L
+            ).copy(
+                rawTextPreview = "Envios Carro R$ 10,30 4,77 (337) O Verificado 7 min (5.4 km)",
+                productName = "Envios Carro"
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "manual-2",
+                observationId = "obs-manual-2",
+                platform = RidePlatform.UNKNOWN,
+                price = 10.30,
+                pickupDistanceKm = 5.4,
+                tripDistanceKm = 6.7,
+                totalDistanceKm = 12.1,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 5_000L
+            ).copy(
+                rawTextPreview = "Envios Carro Exclusivo R$ 10,30 4,77 (337) O Verificado 8 min (5.4 km)",
+                productName = "Envios Carro Exclusivo"
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+    }
+
+    @Test
     fun acceptManually_createsSavedRideAndUpdatesStatus() {
         val seenRepo = seenOfferRepository()
         val rideRepo = savedRideRepository()

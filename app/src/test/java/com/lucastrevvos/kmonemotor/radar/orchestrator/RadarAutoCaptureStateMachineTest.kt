@@ -167,6 +167,19 @@ class RadarAutoCaptureStateMachineTest {
         assertFalse(machine.shouldBlockAutomaticCapture(2_500L))
     }
 
+    @Test
+    fun captureInProgress_blocksAutomaticCapture() {
+        val machine = RadarAutoCaptureStateMachine()
+        val evidence = strongEvidence(1_000L)
+        machine.transitionToCandidate("offer_card_tree_signal", evidence)
+        machine.transitionToStabilizing("stabilization_started", evidence)
+        machine.transitionToConfirmed("stabilization_confirmed", evidence)
+        machine.transitionToCaptureInProgress("capture_request_created", evidence)
+
+        assertTrue(machine.shouldBlockAutomaticCapture(1_500L))
+        assertEquals("capture_already_in_progress", machine.automaticBlockReason(1_500L))
+    }
+
     private fun strongEvidence(timestampMs: Long) = RadarAutoCaptureEvidence(
         triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
         hasPriceText = true,

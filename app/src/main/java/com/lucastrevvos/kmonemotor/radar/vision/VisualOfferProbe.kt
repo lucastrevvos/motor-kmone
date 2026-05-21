@@ -196,6 +196,15 @@ class VisualOfferProbe(
             } ?: ranked.firstOrNull {
                 it.kind == CropKind.CENTER_CARD_AREA && it.valid && it.probe.offerLikeScore >= 5
             }
+            TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG -> ranked.firstOrNull {
+                it.kind == CropKind.FLOATING_BOUNDS_EXPANDED && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.LOWER_HALF && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.LOWER_THIRD && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.CENTER_CARD_AREA && it.valid && it.probe.offerLikeScore >= 5
+            }
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> preferredCropOrder(observation).asSequence()
                 .mapNotNull { preferredKind ->
                     ranked.firstOrNull { it.kind == preferredKind && it.valid && it.probe.offerLikeScore >= 5 }
@@ -358,6 +367,13 @@ class VisualOfferProbe(
                 CropKind.FLOATING_BOUNDS_EXPANDED,
                 CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
+            TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG -> listOf(
+                CropKind.FLOATING_BOUNDS_EXPANDED,
+                CropKind.LOWER_HALF,
+                CropKind.LOWER_THIRD,
+                CropKind.CENTER_CARD_AREA,
+                CropKind.PLATFORM_SPECIFIC_CANDIDATE
+            )
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
             TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> buildList {
                 add(CropKind.LOWER_HALF)
@@ -388,6 +404,9 @@ class VisualOfferProbe(
         if (triggerSource == TriggerSource.UBER_AUTO_BURST_RECOVERY && cropKind == CropKind.LOWER_HALF) {
             score += 2
         }
+        if (triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG && cropKind == CropKind.FLOATING_BOUNDS_EXPANDED) {
+            score += 2
+        }
         if ((triggerSource == TriggerSource.NINETY_NINE_TREE_STRUCTURE ||
                 triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC) &&
             cropKind == CropKind.LOWER_HALF
@@ -398,7 +417,9 @@ class VisualOfferProbe(
     }
 
     private fun preferredCropOrder(observation: ScreenObservation): List<CropKind> {
-        val raw = observation.metadata.notes["autoBurstPreferredCropOrder"] ?: return emptyList()
+        val raw = observation.metadata.notes["autoBurstPreferredCropOrder"]
+            ?: observation.metadata.notes["preOfferWatchdogPreferredCropOrder"]
+            ?: return emptyList()
         return raw.split(",")
             .mapNotNull { token -> runCatching { CropKind.valueOf(token.trim()) }.getOrNull() }
     }

@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import java.text.Normalizer
 
 data class SeenOfferSanitizationResult(
@@ -11,11 +12,56 @@ data class SeenOfferSanitizationResult(
 
 class SeenOfferSanitizer {
     fun sanitize(candidate: SeenOffer): SeenOfferSanitizationResult {
-        if (SeenOfferSanitizationRules.hasFuelOrPromoSignals(candidate)) {
+        if (SeenOfferSanitizationRules.hasOperationalMoneySignals(candidate) &&
+            !SeenOfferSanitizationRules.hasStrongUberOfferSignals(candidate)
+        ) {
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_SANITIZER_REJECTED_REASON_DETAIL",
+                "observationId" to candidate.observationId,
+                "reason" to "operational_earnings_money_without_offer_evidence",
+                "rawTextPreview" to candidate.rawTextPreview,
+                "productName" to candidate.productName
+            )
             return SeenOfferSanitizationResult(
                 shouldPersist = false,
                 sanitizedOffer = null,
                 reason = "non_offer_fuel_or_promo_screen"
+            )
+        }
+
+        if (SeenOfferSanitizationRules.hasFuelOrPromoSignals(candidate)) {
+            if (SeenOfferSanitizationRules.hasStrongUberOfferSignals(candidate)) {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SANITIZER_UBER_PRIORITY_PROMO_TEXT_ALLOWED",
+                    "observationId" to candidate.observationId,
+                    "platform" to candidate.platform,
+                    "productName" to candidate.productName,
+                    "rawTextPreview" to candidate.rawTextPreview
+                )
+            } else {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SANITIZER_REJECTED_REASON_DETAIL",
+                    "observationId" to candidate.observationId,
+                    "reason" to "non_offer_fuel_or_promo_screen",
+                    "rawTextPreview" to candidate.rawTextPreview,
+                    "productName" to candidate.productName
+                )
+                return SeenOfferSanitizationResult(
+                    shouldPersist = false,
+                    sanitizedOffer = null,
+                    reason = "non_offer_fuel_or_promo_screen"
+                )
+            }
+        }
+
+        if (SeenOfferSanitizationRules.hasStrongUberOfferSignals(candidate)) {
+            return SeenOfferSanitizationResult(
+                shouldPersist = true,
+                sanitizedOffer = candidate.normalizeZeroDistances().normalizeValuePerKm().normalizeProductName(),
+                reason = "accepted"
             )
         }
 
@@ -71,6 +117,29 @@ object SeenOfferSanitizationRules {
         "etanol",
         "litro"
     )
+    private val uberOfferTerms = listOf(
+        "uberx",
+        "priority",
+        "comfort",
+        "black",
+        "flash",
+        "moto",
+        "exclusivo"
+    )
+    private val operationalMoneyTerms = listOf(
+        "ganhos",
+        "oportunidades",
+        "agora seus ganhos sao mais altos",
+        "e um bom momento para ficar online",
+        "os ganhos das viagens sao altos",
+        "pagina inicial",
+        "mensagens",
+        "menu",
+        "ficar online",
+        "voce esta online",
+        "voce esta offline"
+    )
+    private val plusMoneyRegex = Regex("""\+\s*r\$\s*\d""", RegexOption.IGNORE_CASE)
 
     fun hasFuelOrPromoSignals(offer: SeenOffer): Boolean {
         return listOfNotNull(
@@ -82,6 +151,41 @@ object SeenOfferSanitizationRules {
             val normalized = normalize(text)
             fuelTerms.any { normalized.contains(it) }
         }
+    }
+
+    fun hasStrongUberOfferSignals(offer: SeenOffer): Boolean {
+        val normalizedTexts = listOfNotNull(
+            offer.rawTextPreview,
+            offer.productName,
+            offer.originPreview,
+            offer.destinationPreview
+        ).map(::normalize)
+        val hasUberProduct = offer.platform == RidePlatform.UBER || normalizedTexts.any { text ->
+            uberOfferTerms.any { text.contains(it) }
+        }
+        val hasPrice = offer.price != null
+        val hasRoute = offer.tripDistanceKm != null ||
+            offer.pickupDistanceKm != null ||
+            offer.tripTimeMin != null ||
+            offer.pickupTimeMin != null ||
+            offer.totalDistanceKm != null
+        return hasUberProduct && hasPrice && hasRoute
+    }
+
+    fun hasOperationalMoneySignals(offer: SeenOffer): Boolean {
+        val normalizedTexts = listOfNotNull(
+            offer.rawTextPreview,
+            offer.productName,
+            offer.originPreview,
+            offer.destinationPreview
+        ).map(::normalize)
+        val hasMoney = normalizedTexts.any { text ->
+            text.contains("r$") || plusMoneyRegex.containsMatchIn(text)
+        }
+        val hasOperationalContext = normalizedTexts.any { text ->
+            operationalMoneyTerms.any { text.contains(it) }
+        }
+        return hasMoney && hasOperationalContext
     }
 
     fun isBadProductName(productName: String): Boolean {

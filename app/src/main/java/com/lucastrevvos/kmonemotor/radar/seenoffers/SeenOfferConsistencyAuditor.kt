@@ -52,6 +52,31 @@ class SeenOfferConsistencyAuditor {
                 "totalDistanceKm" to adjusted.totalDistanceKm
             )
         }
+        if (
+            adjusted.platform == RidePlatform.NINETY_NINE &&
+            adjusted.price != null &&
+            offer.valuePerKm != null &&
+            adjusted.totalDistanceKm != null &&
+            adjusted.totalDistanceKm > 0.0
+        ) {
+            val computedValuePerKm = adjusted.price / adjusted.totalDistanceKm
+            val delta = kotlin.math.abs(computedValuePerKm - offer.valuePerKm)
+            RadarLogger.i(
+                "KM_V2_SEEN",
+                "KM_V2_99_ECONOMICS_COMPARE",
+                "price" to adjusted.price,
+                "explicitValuePerKm" to offer.valuePerKm,
+                "pickupDistanceKm" to adjusted.pickupDistanceKm,
+                "tripDistanceKm" to adjusted.tripDistanceKm,
+                "resolvedTotalDistanceKm" to adjusted.totalDistanceKm,
+                "computedValuePerKm" to computedValuePerKm,
+                "delta" to delta,
+                "reason" to if (delta <= 0.05) "within_tolerance" else if (delta > 0.10) "explicit_value_per_km_mismatch" else "minor_rounding_delta"
+            )
+            if (delta > 0.10) {
+                warnings += "explicit_value_per_km_mismatch"
+            }
+        }
 
         val price = adjusted.price
         val tripTime = adjusted.tripTimeMin

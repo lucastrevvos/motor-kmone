@@ -43,6 +43,8 @@ import com.lucastrevvos.kmonemotor.radar.ocr.OcrObservation
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrRunPolicy
 import com.lucastrevvos.kmonemotor.radar.orchestrator.ManualAnalysisContext
 import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoCapturePipelineResult
+import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoAttemptTrace
+import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoMissDiagnostics
 import com.lucastrevvos.kmonemotor.radar.orchestrator.RadarCaptureOrchestrator
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserDebugWriter
@@ -146,6 +148,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
     private val observationsById = mutableMapOf<String, ScreenObservation>()
     private val floatingObstructionByObservationId = mutableMapOf<String, FloatingObstructionResult>()
     private val automaticCaptureSourcesByObservationId = mutableMapOf<String, AutomaticCaptureSourceSnapshot>()
+    private val autoMissDiagnostics = AutoMissDiagnostics()
     private var latestWindowSnapshot: WindowStackSnapshot? = null
     private var latestNodeSignature: NodeTreeSignature? = null
     private var latestFloatingKind: FloatingWindowKind = FloatingWindowKind.UNKNOWN_FLOATING
@@ -153,6 +156,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
         RadarCaptureOrchestrator(
             screenshotCapturer = screenshotCapturer,
             clock = clock,
+            autoMissDiagnostics = autoMissDiagnostics,
             onObservationCreated = ::onObservationCreated
         )
     }
@@ -1143,6 +1147,16 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "observationId" to observation.observationId,
                 "rawTextPreview" to observation.rawTextPreview()
             )
+            if (!observation.isManual) {
+                autoMissDiagnostics.recordAutoTrace(
+                    AutoAttemptTrace(
+                        timestampMs = observation.finishedAtMs,
+                        triggerSource = observation.triggerSource,
+                        stage = "ocr_result",
+                        selectedCropKind = observation.cropKind
+                    )
+                )
+            }
             RadarLogger.i(
                 "KM_V2_OCR",
                 "KM_V2_LATENCY_OCR",
@@ -1328,7 +1342,51 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 pricePreview = pricePreview,
                 reason = fingerprint.reason
             )
+            if (!observation.isManual) {
+                autoMissDiagnostics.recordAutoTrace(
+                    AutoAttemptTrace(
+                        timestampMs = finishedAtMs,
+                        triggerSource = observation.triggerSource,
+                        stage = "fingerprint_result",
+                        reason = fingerprint.reason,
+                        selectedCropKind = observation.cropKind,
+                        fingerprintKind = fingerprint.kind.name,
+                        platform = fingerprint.platformTextHint.name
+                    )
+                )
+            }
             fingerprintDebugWriter.write(fingerprint, observation)
+            if (observation.triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG &&
+                fingerprint.kind != OfferTextFingerprintKind.OFFER_LIKE
+            ) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_PRE_OFFER_WATCHDOG_PROBE_RESULT",
+                    "probeIndex" to null,
+                    "fingerprintKind" to fingerprint.kind,
+                    "platform" to fingerprint.platformTextHint,
+                    "persistReason" to "watchdog_non_offer"
+                )
+                logOfferPipelineFinalResult(
+                    observation = observation,
+                    fingerprint = fingerprint,
+                    parserStatus = "skipped",
+                    parserReason = "watchdog_non_offer",
+                    decisionStatus = "skipped",
+                    decisionReason = "watchdog_non_offer",
+                    presentationStatus = "skipped",
+                    presentationReason = "watchdog_non_offer",
+                    wasOverlayShown = false,
+                    overlayKind = null,
+                    persistenceResult = SeenOfferPersistenceResult(
+                        attempted = false,
+                        persisted = false,
+                        reason = "watchdog_non_offer"
+                    ),
+                    finalReason = "watchdog_non_offer"
+                )
+                return fingerprint
+            }
               val burstContext = burstContextByObservationId[observation.observationId]
               if (burstContext != null) {
                   RadarLogger.i(
@@ -2266,6 +2324,45 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 timestampMs = clock.nowMs()
             )
         )
+        if (!observation.isManual) {
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = clock.nowMs(),
+                    triggerSource = observation.triggerSource,
+                    stage = "pipeline_final",
+                    reason = resolvedFinalReason,
+                    selectedCropKind = sourceSnapshot?.selectedCropKind ?: observation.cropKind,
+                    fingerprintKind = fingerprint.kind.name,
+                    platform = fingerprint.platformTextHint.name,
+                    persistReason = persistenceResult.reason
+                )
+            )
+            if (observation.triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_PRE_OFFER_WATCHDOG_PROBE_RESULT",
+                    "probeIndex" to sourceSnapshot?.sourceObservation?.metadata?.notes?.get("preOfferWatchdogProbeIndex"),
+                    "fingerprintKind" to fingerprint.kind,
+                    "platform" to fingerprint.platformTextHint,
+                    "persistReason" to persistenceResult.reason
+                )
+            }
+        } else if (
+            fingerprint.kind == OfferTextFingerprintKind.OFFER_LIKE &&
+            persistenceResult.persisted
+        ) {
+            val persistedOffer = persistenceResult.seenOffer
+            autoMissDiagnostics.reportManualOracleSuccess(
+                manualObservationId = observation.observationId,
+                manualPlatform = persistedOffer?.platform?.name ?: fingerprint.platformTextHint.name,
+                manualPrice = persistedOffer?.price ?: fingerprint.priceCandidates.firstOrNull()?.normalizedValue,
+                manualDistances = fingerprint.distanceCandidates.joinToString(",") { "${it.normalizedValue}${it.unit}" },
+                manualTimes = fingerprint.timeCandidates.joinToString(",") { "${it.normalizedValue}${it.unit}" },
+                manualSelectedCropKind = observation.cropKind.name,
+                manualTriggerSource = observation.triggerSource.name,
+                timestampMs = clock.nowMs()
+            )
+        }
         RadarLogger.i(
             "KM_V2_PIPELINE",
             "KM_V2_OFFER_PIPELINE_FINAL_RESULT",
@@ -2392,6 +2489,36 @@ class KmRadarAccessibilityService : AccessibilityService() {
             )
         }
         if (!decision.shouldScheduleBurst) {
+            when (decision.reason) {
+                "operational_screen_recovery_suppressed" -> RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_RECOVERY_SUPPRESSED_OPERATIONAL_SCREEN",
+                    "observationId" to observation.observationId,
+                    "triggerSource" to observation.triggerSource,
+                    "rawTextPreview" to observation.rawTextPreview(),
+                    "fingerprintKind" to fingerprint.kind
+                )
+                "map_searching_recovery_suppressed" -> RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_AUTO_RECOVERY_SUPPRESSED_MAP_SEARCHING",
+                    "observationId" to observation.observationId,
+                    "triggerSource" to observation.triggerSource,
+                    "rawTextPreview" to observation.rawTextPreview(),
+                    "fingerprintKind" to fingerprint.kind
+                )
+            }
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = clock.nowMs(),
+                    triggerSource = observation.triggerSource,
+                    stage = "recovery_suppressed",
+                    reason = decision.reason,
+                    selectedCropKind = observation.cropKind,
+                    fingerprintKind = fingerprint.kind.name,
+                    platform = fingerprint.platformTextHint.name,
+                    persistReason = if (decision.reason?.contains("suppressed") == true) decision.reason else null
+                )
+            )
             RadarLogger.i(
                 "KM_V2_AUTO",
                 "KM_V2_AUTO_BURST_SKIPPED",

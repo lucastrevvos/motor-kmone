@@ -24,13 +24,19 @@ class FileSeenOfferRepository(
                 candidate = offer,
                 existing = duplicate
             )
-            if (offer.platform == RidePlatform.UNKNOWN && platformResolution != null) {
+            if (platformResolution != null && offer.platform != platformResolution.effectiveCandidatePlatform) {
                 RadarLogger.i(
                     "KM_V2_SEEN",
-                    "KM_V2_SEEN_OFFER_PLATFORM_INFERRED_FOR_MERGE",
-                    "candidatePlatform" to offer.platform,
-                    "effectivePlatform" to platformResolution.effectiveCandidatePlatform,
-                    "reason" to platformResolution.reason,
+                    "KM_V2_PLATFORM_CONTEXTUAL_OVERRIDE",
+                    "from" to offer.platform,
+                    "to" to platformResolution.effectiveCandidatePlatform,
+                    "reason" to if (
+                        platformResolution.effectiveCandidatePlatform == RidePlatform.NINETY_NINE
+                    ) {
+                        "strong_99_text_signals_or_recent_99_offer"
+                    } else {
+                        platformResolution.reason
+                    },
                     "newObservationId" to offer.observationId,
                     "existingSeenOfferId" to duplicate.id
                 )

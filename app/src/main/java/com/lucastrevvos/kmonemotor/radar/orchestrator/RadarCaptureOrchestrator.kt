@@ -28,6 +28,8 @@ class RadarCaptureOrchestrator(
     private val clock: RadarClock = RadarClock.System,
     private val offerCycleClassifier: OfferCycleClassifier = OfferCycleClassifier(),
     private val stabilizationScheduler: StabilizationScheduler = DefaultStabilizationScheduler(),
+    private val watchdogScheduler: StabilizationScheduler = DefaultStabilizationScheduler(),
+    private val autoMissDiagnostics: AutoMissDiagnostics = AutoMissDiagnostics(),
     private val onObservationCreated: ((ScreenObservation, ScreenshotCaptureResult) -> Unit)? = null
 ) {
     private var previousNinetyNineSignature: NodeTreeSignature? = null
@@ -36,6 +38,7 @@ class RadarCaptureOrchestrator(
     private val finishedCaptureIds = mutableSetOf<String>()
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
     private var pendingUberOfferCardStabilization: UberOfferCardStabilization? = null
+    private var pendingPreOfferWatchdog: PreOfferWatchdogSession? = null
     private val autoEvidenceAccumulator = RadarAutoCaptureEvidenceAccumulator()
     private val autoStateMachine = RadarAutoCaptureStateMachine()
 
@@ -92,8 +95,13 @@ class RadarCaptureOrchestrator(
     }
 
     fun onAutoCapturePipelineFinished(result: AutoCapturePipelineResult) {
-        if (result.triggerSource != TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC) {
+        if (result.triggerSource != TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
+            result.triggerSource != TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG
+        ) {
             return
+        }
+        if (result.wasPersisted && result.fingerprintKind == "OFFER_LIKE") {
+            cancelPreOfferVisualWatchdog("offer_captured")
         }
         applyAutoTransition(autoStateMachine.expireCooldownIfNeeded(result.timestampMs))
         autoStateMachine.onPipelineFinished(result).forEach(::applyAutoTransition)
@@ -506,7 +514,7 @@ class RadarCaptureOrchestrator(
         val offerCardTreeSignal = hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)
         val evidence = RadarAutoCaptureEvidence(
             triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
-            hasPriceText = treeTextSignals.hasPriceText,
+            hasPriceText = treeTextSignals.hasOfferPriceText,
             hasUberProductText = treeTextSignals.hasUberProductText,
             hasRoutePairText = treeTextSignals.hasRoutePairText,
             hasSearchingText = treeTextSignals.hasSearchingText,
@@ -518,12 +526,38 @@ class RadarCaptureOrchestrator(
         autoEvidenceAccumulator.add(evidence)
         autoStateMachine.addEvidence(evidence)
         logAutoEvidenceAdded(evidence)
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = nowMs,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "tree_evaluated",
+                state = autoStateMachine.snapshot().state,
+                treeScore = evidence.treeScore,
+                hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                hasUberProductText = treeTextSignals.hasUberProductText,
+                hasRoutePairText = treeTextSignals.hasRoutePairText,
+                hasSearchingText = treeTextSignals.hasSearchingText,
+                isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                operationalReason = treeTextSignals.operationalScreen.reason,
+                knownStateTexts = signal.knownStateTexts
+            )
+        )
         logAutoStateSnapshot()
+        logOperationalScreenSignal(signal, treeTextSignals)
+        if (pendingPreOfferWatchdog != null &&
+            treeTextSignals.operationalScreen.isOperationalScreen &&
+            !treeTextSignals.hasOfferPriceText &&
+            !treeTextSignals.hasUberProductText &&
+            !treeTextSignals.hasRoutePairText
+        ) {
+            cancelPreOfferVisualWatchdog("operational_screen_detected")
+        }
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
             "KM_V2_MAP_ETA_RANGE_SIGNAL",
             "knownStateTexts" to signal.knownStateTexts.joinToString(","),
-            "hasPriceText" to treeTextSignals.hasPriceText,
+            "hasPriceText" to treeTextSignals.hasOfferPriceText,
             "hasUberProductText" to treeTextSignals.hasUberProductText,
             "hasRoutePairText" to treeTextSignals.hasRoutePairText,
             "treeScore" to evidence.treeScore,
@@ -534,7 +568,25 @@ class RadarCaptureOrchestrator(
                 "KM_V2_ORCHESTRATOR",
                 "KM_V2_AUTO_CAPTURE_BLOCKED_BY_STATE",
                 "state" to autoStateMachine.snapshot().state,
-                "reason" to "recent_offer_captured"
+                "reason" to autoStateMachine.automaticBlockReason(nowMs)
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "blocked_by_state",
+                    reason = autoStateMachine.automaticBlockReason(nowMs),
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = evidence.treeScore,
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason,
+                    knownStateTexts = signal.knownStateTexts
+                )
             )
             return null
         }
@@ -551,10 +603,13 @@ class RadarCaptureOrchestrator(
             "KM_V2_OFFER_CARD_TREE_SIGNAL",
             "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
             "detected" to offerCardTreeSignal,
-            "hasPriceText" to treeTextSignals.hasPriceText,
+            "hasOfferPriceText" to treeTextSignals.hasOfferPriceText,
+            "hasOperationalMoneyText" to treeTextSignals.hasOperationalMoneyText,
             "hasUberProductText" to treeTextSignals.hasUberProductText,
             "hasRoutePairText" to treeTextSignals.hasRoutePairText,
             "hasSearchingText" to treeTextSignals.hasSearchingText,
+            "isOperationalScreen" to treeTextSignals.operationalScreen.isOperationalScreen,
+            "operationalReason" to treeTextSignals.operationalScreen.reason,
             "numericTextNodeCount" to signal.numericTextNodeCount,
             "buttonLikeNodeCount" to signal.buttonLikeNodeCount,
             "bottomHalfTextNodeCount" to signal.bottomHalfTextNodeCount,
@@ -607,15 +662,45 @@ class RadarCaptureOrchestrator(
             else -> null
         }
         if (rejectionReason != null) {
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = if (rejectionReason == "pre_offer_map_state") "trigger_rejected_pre_offer" else "offer_card_signal_rejected",
+                    reason = treeTextSignals.rejectionReason ?: rejectionReason,
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = evidence.treeScore,
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason
+                )
+            )
             if (rejectionReason == "pre_offer_map_state") {
-                applyAutoTransition(autoStateMachine.transitionToPreOffer("map_or_searching_signal", evidence))
+                applyAutoTransition(
+                    autoStateMachine.transitionToPreOffer(
+                        treeTextSignals.rejectionReason ?: "map_or_searching_signal",
+                        evidence
+                    )
+                )
+                maybeStartPreOfferVisualWatchdog(
+                    signal = signal,
+                    matchedConditions = matchedConditions,
+                    treeTextSignals = treeTextSignals,
+                    rejectionReason = treeTextSignals.rejectionReason,
+                    nowMs = nowMs,
+                    epoch = epoch
+                )
             }
             if (rejectionReason == "pre_offer_map_state") {
                 RadarLogger.i(
                     "KM_V2_ORCHESTRATOR",
                     "KM_V2_TRIGGER_REJECTED_PRE_OFFER_MAP_STATE",
                     "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
-                    "reason" to rejectionReason,
+                    "reason" to (treeTextSignals.rejectionReason ?: rejectionReason),
                     "currentState" to signal.currentState,
                     "knownStateTexts" to signal.knownStateTexts.joinToString(","),
                     "matchedConditions" to matchedConditions.joinToString(",")
@@ -632,6 +717,7 @@ class RadarCaptureOrchestrator(
             return null
         }
         if (offerCardTreeSignal) {
+            cancelPreOfferVisualWatchdog("offer_card_signal_detected")
             applyAutoTransition(autoStateMachine.transitionToCandidate("offer_card_tree_signal", evidence))
             RadarLogger.i(
                 "KM_V2_ORCHESTRATOR",
@@ -1015,7 +1101,14 @@ class RadarCaptureOrchestrator(
         const val UBER_DOMINANT_DIAGNOSTIC_COOLDOWN_MS = 4000L
         const val UBER_OFFER_CARD_STABILIZATION_DELAY_MS = 300L
         const val NINETY_NINE_COMPACT_DIAGNOSTIC_COOLDOWN_MS = 4000L
+        val PRE_OFFER_WATCHDOG_PREFERRED_CROP_ORDER = listOf(
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.FLOATING_BOUNDS_EXPANDED,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_THIRD,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.CENTER_CARD_AREA
+        )
         val PRICE_TREE_REGEX = Regex("""(?:r\$|\$)\s*\d""", RegexOption.IGNORE_CASE)
+        val PLUS_MONEY_TREE_REGEX = Regex("""\+\s*r\$\s*\d""", RegexOption.IGNORE_CASE)
         val ROUTE_PAIR_TREE_REGEX = Regex("""\b\d+\s*(?:min|minutos).*\b\d+[.,]?\d*\s*km""", RegexOption.IGNORE_CASE)
         val ETA_RANGE_TREE_REGEX = Regex("""\b\d+\s*-\s*\d+\s*min\b""", RegexOption.IGNORE_CASE)
     }
@@ -1072,7 +1165,7 @@ class RadarCaptureOrchestrator(
         treeTextSignals: UberTreeTextSignals
     ): Int {
         var score = 0
-        if (treeTextSignals.hasPriceText) score += 3
+        if (treeTextSignals.hasOfferPriceText) score += 3
         if (treeTextSignals.hasUberProductText) score += 3
         if (treeTextSignals.hasRoutePairText) score += 3
         if (signal.numericTextNodeCount >= 2) score += 2
@@ -1086,6 +1179,7 @@ class RadarCaptureOrchestrator(
         val previousPending = pendingCaptureRequest
         pendingCaptureRequest = null
         cancelUberOfferCardStabilization("manual_request")
+        cancelPreOfferVisualWatchdog("manual_request")
         autoEvidenceAccumulator.clear()
         if (previousPending != null && !previousPending.isManual) {
             RadarLogger.i(
@@ -1154,6 +1248,16 @@ class RadarCaptureOrchestrator(
         val cancellationHandle: StabilizationScheduler.CancellationHandle
     )
 
+    private data class PreOfferWatchdogSession(
+        val sessionId: String,
+        val signal: RadarSignal.UberStateChanged,
+        val epoch: Long,
+        val startedAtMs: Long,
+        val delaysMs: List<Long>,
+        val handles: MutableList<StabilizationScheduler.CancellationHandle>,
+        val reason: String
+    )
+
     private fun logOfferCycleClassification(classification: OfferCycleClassification) {
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
@@ -1196,7 +1300,7 @@ class RadarCaptureOrchestrator(
         val treeTextSignals = evaluateUberTreeTextSignals(signal)
         val evidence = RadarAutoCaptureEvidence(
             triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
-            hasPriceText = treeTextSignals.hasPriceText,
+            hasPriceText = treeTextSignals.hasOfferPriceText,
             hasUberProductText = treeTextSignals.hasUberProductText,
             hasRoutePairText = treeTextSignals.hasRoutePairText,
             hasSearchingText = treeTextSignals.hasSearchingText,
@@ -1209,10 +1313,19 @@ class RadarCaptureOrchestrator(
         autoStateMachine.addEvidence(evidence)
         logAutoEvidenceAdded(evidence)
         logAutoStateSnapshot()
+        if (autoStateMachine.snapshot().state == RadarAutoCaptureState.CAPTURE_IN_PROGRESS) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_AUTO_CAPTURE_BLOCKED_BY_STATE",
+                "state" to RadarAutoCaptureState.CAPTURE_IN_PROGRESS,
+                "reason" to "capture_already_in_progress"
+            )
+            return
+        }
         val offerCardTreeSignal = hasOfferCardTreeSignal(signal, matchedConditions, treeTextSignals)
         val mapSearchingTreeSignal = hasMapSearchingTreeSignal(signal, treeTextSignals)
         if (mapSearchingTreeSignal) {
-            cancelUberOfferCardStabilization("operational_text_detected")
+            cancelUberOfferCardStabilization("stabilization_cancelled_operational_screen")
             return
         }
         if (offerCardTreeSignal) {
@@ -1261,6 +1374,23 @@ class RadarCaptureOrchestrator(
                 "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
                 "reason" to "tree_changed_still_candidate"
             )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "stabilization_started",
+                    reason = "tree_changed_still_candidate",
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = treeScore,
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason
+                )
+            )
         } else {
             applyAutoTransition(autoStateMachine.transitionToStabilizing("stabilization_started", evidence))
             RadarLogger.i(
@@ -1269,10 +1399,28 @@ class RadarCaptureOrchestrator(
                 "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
                 "delayMs" to UBER_OFFER_CARD_STABILIZATION_DELAY_MS,
                 "treeScore" to treeScore,
-                "hasPriceText" to treeTextSignals.hasPriceText,
+                "hasOfferPriceText" to treeTextSignals.hasOfferPriceText,
+                "hasOperationalMoneyText" to treeTextSignals.hasOperationalMoneyText,
                 "hasUberProductText" to treeTextSignals.hasUberProductText,
                 "hasRoutePairText" to treeTextSignals.hasRoutePairText,
                 "hasSearchingText" to treeTextSignals.hasSearchingText
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "stabilization_started",
+                    reason = "stabilization_started",
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = treeScore,
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason
+                )
             )
             RadarLogger.i(
                 "KM_V2_ORCHESTRATOR",
@@ -1297,14 +1445,31 @@ class RadarCaptureOrchestrator(
         if (!offerCardTreeSignal || mapSearchingTreeSignal) {
             applyAutoTransition(
                 autoStateMachine.transitionToPreOffer(
-                    if (mapSearchingTreeSignal) "stabilization_cancelled_operational_text" else "weak_evidence",
+                    if (mapSearchingTreeSignal) "stabilization_cancelled_operational_screen" else "weak_evidence",
                     pending.evidence
                 )
             )
             RadarLogger.i(
                 "KM_V2_ORCHESTRATOR",
                 "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
-                "reason" to if (mapSearchingTreeSignal) "map_searching_state" else "weak_evidence"
+                "reason" to if (mapSearchingTreeSignal) "operational_screen_detected" else "weak_evidence"
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = clock.nowMs(),
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "stabilization_cancelled",
+                    reason = if (mapSearchingTreeSignal) "operational_screen_detected" else "weak_evidence",
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = computeUberOfferCardTreeScore(signal, treeTextSignals),
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason
+                )
             )
             return
         }
@@ -1319,6 +1484,15 @@ class RadarCaptureOrchestrator(
                 "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
                 "reason" to "same_signature_cooldown"
             )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "stabilization_cancelled",
+                    reason = "same_signature_cooldown",
+                    state = autoStateMachine.snapshot().state
+                )
+            )
             return
         }
         val request = buildConfirmedUberDominantDiagnosticRequest(
@@ -1328,13 +1502,30 @@ class RadarCaptureOrchestrator(
             matchedConditions = matchedConditions
         ) ?: return
         applyAutoTransition(autoStateMachine.transitionToCaptureInProgress("capture_request_created", pending.evidence))
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = nowMs,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "capture_approved",
+                reason = "capture_request_created",
+                state = autoStateMachine.snapshot().state,
+                treeScore = computeUberOfferCardTreeScore(signal, treeTextSignals),
+                hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                hasUberProductText = treeTextSignals.hasUberProductText,
+                hasRoutePairText = treeTextSignals.hasRoutePairText,
+                hasSearchingText = treeTextSignals.hasSearchingText,
+                isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                operationalReason = treeTextSignals.operationalScreen.reason
+            )
+        )
         uberDominantDiagnosticCooldownBySignature[signature] = nowMs
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
             "KM_V2_OFFER_CARD_STABILIZATION_CONFIRMED",
             "reason" to "offer_card_tree_signal_stabilized",
             "finalTreeScore" to computeUberOfferCardTreeScore(signal, treeTextSignals),
-            "hasPriceText" to treeTextSignals.hasPriceText,
+            "hasOfferPriceText" to treeTextSignals.hasOfferPriceText,
             "hasUberProductText" to treeTextSignals.hasUberProductText,
             "hasRoutePairText" to treeTextSignals.hasRoutePairText
         )
@@ -1347,9 +1538,143 @@ class RadarCaptureOrchestrator(
         pending.cancellationHandle.cancel()
         pendingUberOfferCardStabilization = null
         applyAutoTransition(autoStateMachine.transitionToPreOffer(reason, pending.evidence))
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = clock.nowMs(),
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "stabilization_cancelled",
+                reason = reason,
+                state = autoStateMachine.snapshot().state,
+                treeScore = pending.evidence.treeScore,
+                hasOfferPriceText = pending.treeTextSignals.hasOfferPriceText,
+                hasOperationalMoneyText = pending.treeTextSignals.hasOperationalMoneyText,
+                hasUberProductText = pending.treeTextSignals.hasUberProductText,
+                hasRoutePairText = pending.treeTextSignals.hasRoutePairText,
+                hasSearchingText = pending.treeTextSignals.hasSearchingText,
+                isOperationalScreen = pending.treeTextSignals.operationalScreen.isOperationalScreen,
+                operationalReason = pending.treeTextSignals.operationalScreen.reason
+            )
+        )
         RadarLogger.i(
             "KM_V2_ORCHESTRATOR",
             "KM_V2_OFFER_CARD_STABILIZATION_CANCELLED",
+            "reason" to reason
+        )
+    }
+
+    private fun maybeStartPreOfferVisualWatchdog(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals,
+        rejectionReason: String?,
+        nowMs: Long,
+        epoch: Long
+    ) {
+        val plan = PreOfferVisualWatchdog.planStart(
+            rejectionReason = rejectionReason,
+            matchedConditions = matchedConditions,
+            knownStateTexts = signal.knownStateTexts,
+            isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen
+        )
+        if (!plan.shouldStart) {
+            return
+        }
+        cancelPreOfferVisualWatchdog("restarted")
+        val sessionId = UUID.randomUUID().toString()
+        val handles = plan.delaysMs.mapIndexed { index, delayMs ->
+            watchdogScheduler.schedule(delayMs) {
+                executePreOfferVisualWatchdogProbe(sessionId, index, delayMs)
+            }
+        }.toMutableList()
+        pendingPreOfferWatchdog = PreOfferWatchdogSession(
+            sessionId = sessionId,
+            signal = signal,
+            epoch = epoch,
+            startedAtMs = nowMs,
+            delaysMs = plan.delaysMs,
+            handles = handles,
+            reason = plan.reason ?: "pre_offer_watchdog"
+        )
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_PRE_OFFER_WATCHDOG_STARTED",
+            "reason" to pendingPreOfferWatchdog?.reason,
+            "delaysMs" to plan.delaysMs.joinToString(",")
+        )
+    }
+
+    private fun executePreOfferVisualWatchdogProbe(
+        sessionId: String,
+        probeIndex: Int,
+        delayMs: Long
+    ) {
+        val session = pendingPreOfferWatchdog ?: return
+        if (session.sessionId != sessionId) {
+            return
+        }
+        val request = buildPreOfferVisualWatchdogRequest(session, clock.nowMs(), probeIndex) ?: return
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_PRE_OFFER_WATCHDOG_PROBE_REQUESTED",
+            "probeIndex" to probeIndex,
+            "delayMs" to delayMs,
+            "triggerSource" to request.triggerSource,
+            "preferredCropOrder" to PRE_OFFER_WATCHDOG_PREFERRED_CROP_ORDER.joinToString(",")
+        )
+        scheduleCapture(request)
+        if (probeIndex == session.delaysMs.lastIndex) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_PRE_OFFER_WATCHDOG_EXHAUSTED",
+                "reason" to session.reason
+            )
+            pendingPreOfferWatchdog = null
+        }
+    }
+
+    private fun buildPreOfferVisualWatchdogRequest(
+        session: PreOfferWatchdogSession,
+        nowMs: Long,
+        probeIndex: Int = 0
+    ): CaptureRequest? {
+        val offerCycleClassification = OfferCycleClassification(
+            kind = OfferCycleKind.NEW_OFFER_CYCLE,
+            cycleId = "watchdog-${UUID.randomUUID()}",
+            previousCycleId = session.signal.currentState?.name,
+            reason = "pre_offer_visual_watchdog_probe",
+            timeSincePreviousMs = nowMs - session.signal.eventReceivedAtMs,
+            shouldPreferForOcr = true
+        )
+        return CaptureRequest(
+            id = UUID.randomUUID().toString(),
+            sourceEventAtMs = session.signal.eventReceivedAtMs,
+            signalEmittedAtMs = session.signal.signalEmittedAtMs,
+            createdAtMs = nowMs,
+            approvedAtMs = null,
+            triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+            platformHint = PlatformHint.UBER,
+            priority = CapturePriority.LOW,
+            dominantPackage = session.signal.dominantPackage,
+            floatingPackage = session.signal.floatingPackage,
+            floatingBounds = session.signal.floatingBounds,
+            floatingKind = session.signal.floatingKind,
+            reason = "pre_offer_visual_watchdog_probe",
+            offerCycleClassification = offerCycleClassification,
+            metadataNotes = mapOf(
+                "preOfferWatchdogProbeIndex" to probeIndex.toString(),
+                "preOfferWatchdogPreferredCropOrder" to PRE_OFFER_WATCHDOG_PREFERRED_CROP_ORDER.joinToString(",")
+            ),
+            analysisEpoch = session.epoch
+        )
+    }
+
+    private fun cancelPreOfferVisualWatchdog(reason: String) {
+        val session = pendingPreOfferWatchdog ?: return
+        session.handles.forEach { it.cancel() }
+        pendingPreOfferWatchdog = null
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_PRE_OFFER_WATCHDOG_CANCELLED",
             "reason" to reason
         )
     }
@@ -1425,15 +1750,21 @@ class RadarCaptureOrchestrator(
         signal: RadarSignal.UberStateChanged,
         treeTextSignals: UberTreeTextSignals
     ): Boolean {
+        if (treeTextSignals.operationalScreen.isOperationalScreen &&
+            !treeTextSignals.hasUberProductText &&
+            !treeTextSignals.hasRoutePairText
+        ) {
+            return true
+        }
         if (treeTextSignals.hasMapEtaRangeText &&
-            !treeTextSignals.hasPriceText &&
+            !treeTextSignals.hasOfferPriceText &&
             !treeTextSignals.hasUberProductText &&
             !treeTextSignals.hasRoutePairText
         ) {
             return true
         }
         if (treeTextSignals.hasSearchingText &&
-            !treeTextSignals.hasPriceText &&
+            !treeTextSignals.hasOfferPriceText &&
             !treeTextSignals.hasUberProductText &&
             !treeTextSignals.hasRoutePairText
         ) {
@@ -1454,7 +1785,12 @@ class RadarCaptureOrchestrator(
         matchedConditions: List<String>,
         treeTextSignals: UberTreeTextSignals
     ): Boolean {
-        val strongTextEvidence = treeTextSignals.hasPriceText ||
+        if (treeTextSignals.operationalScreen.isOperationalScreen &&
+            !(treeTextSignals.hasUberProductText && (treeTextSignals.hasRoutePairText || treeTextSignals.hasOfferPriceText))
+        ) {
+            return false
+        }
+        val strongTextEvidence = treeTextSignals.hasOfferPriceText ||
             treeTextSignals.hasUberProductText ||
             treeTextSignals.hasRoutePairText
         if (!strongTextEvidence) {
@@ -1472,7 +1808,7 @@ class RadarCaptureOrchestrator(
             return false
         }
         if (treeTextSignals.hasSearchingText &&
-            !treeTextSignals.hasPriceText &&
+            !treeTextSignals.hasOfferPriceText &&
             !treeTextSignals.hasUberProductText &&
             !treeTextSignals.hasRoutePairText
         ) {
@@ -1487,7 +1823,7 @@ class RadarCaptureOrchestrator(
         val strongTreeDelta = "tree_delta_threshold" in matchedConditions &&
             (signal.numericTextNodeCount >= 2 ||
                 (signal.numericTextNodeCount >= 1 && treeTextSignals.hasRoutePairText) ||
-                treeTextSignals.hasPriceText ||
+                treeTextSignals.hasOfferPriceText ||
                 treeTextSignals.hasUberProductText) &&
             signal.bottomHalfTextNodeCount >= 2
         val searchingExitWithSurface = (
@@ -1497,7 +1833,7 @@ class RadarCaptureOrchestrator(
             (
                 "tree_delta_threshold" in matchedConditions ||
                     signal.numericTextNodeCount >= 2 ||
-                    treeTextSignals.hasPriceText ||
+                    treeTextSignals.hasOfferPriceText ||
                     treeTextSignals.hasUberProductText ||
                     treeTextSignals.hasRoutePairText
                 )
@@ -1505,61 +1841,108 @@ class RadarCaptureOrchestrator(
     }
 
     private fun evaluateUberTreeTextSignals(signal: RadarSignal.UberStateChanged): UberTreeTextSignals {
-        val normalizedTexts = signal.knownStateTexts.map { it.lowercase() }
-        val hasPriceText = normalizedTexts.any { it.contains("r$") || PRICE_TREE_REGEX.containsMatchIn(it) }
+        val operationalScreen = UberOperationalScreenClassifier.classify(signal.knownStateTexts)
+        val normalizedTexts = operationalScreen.normalizedTexts
+        val hasRawMoneyText = normalizedTexts.any { it.contains("r$") || PRICE_TREE_REGEX.containsMatchIn(it) }
+        val hasPlusMoneyText = normalizedTexts.any { PLUS_MONEY_TREE_REGEX.containsMatchIn(it) }
         val hasUberProductText = normalizedTexts.any {
             it.contains("uberx") ||
                 it.contains("priority") ||
                 it.contains("flash") ||
                 it.contains("comfort") ||
                 it.contains("black") ||
+                it.contains("moto") ||
                 it.contains("exclusivo")
         }
         val hasRoutePairText = normalizedTexts.any {
             ROUTE_PAIR_TREE_REGEX.containsMatchIn(it) || (it.contains("min") && it.contains("km"))
         }
-        val hasMapEtaRangeText = normalizedTexts.any {
-            ETA_RANGE_TREE_REGEX.containsMatchIn(it)
+        val hasMapEtaRangeText = operationalScreen.hasMapEtaRangeText
+        val hasSearchingText = operationalScreen.hasSearchingContext
+        val hasOperationalMoneyText = operationalScreen.hasOperationalMoneyText ||
+            (
+                hasRawMoneyText &&
+                    (operationalScreen.hasEarningsContext ||
+                        operationalScreen.hasOpportunitiesContext ||
+                        operationalScreen.hasHomeContext ||
+                        operationalScreen.hasOfflineContext ||
+                        operationalScreen.hasSearchingContext) &&
+                    (hasPlusMoneyText || !hasUberProductText) &&
+                    !hasRoutePairText
+                )
+        if (hasOperationalMoneyText) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OPERATIONAL_MONEY_TEXT_DETECTED",
+                "knownStateTexts" to signal.knownStateTexts.joinToString(","),
+                "operationalReason" to operationalScreen.reason,
+                "hasUberProductText" to hasUberProductText,
+                "hasRoutePairText" to hasRoutePairText
+            )
         }
-        val hasSearchingText = normalizedTexts.any {
-            it.contains("procurando viagens") ||
-                it.contains("procurando corridas") ||
-                it.contains("buscando") ||
-                it.contains("página inicial") ||
-                it.contains("pagina inicial") ||
-                it.contains("ganhos") ||
-                it.contains("ficar online") ||
-                it.contains("mensagens") ||
-                it.contains("menu") ||
-                it.contains("conectar")
+        val hasOfferPriceText = hasRawMoneyText &&
+            !hasOperationalMoneyText &&
+            (hasUberProductText || hasRoutePairText)
+        if (hasRawMoneyText && !hasOfferPriceText) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_OFFER_PRICE_TEXT_REJECTED",
+                "reason" to "earnings_context_plus_money",
+                "knownStateTexts" to signal.knownStateTexts.joinToString(",")
+            )
         }
         val rejectionReason = when {
-            hasMapEtaRangeText && !hasPriceText && !hasUberProductText && !hasRoutePairText ->
+            operationalScreen.isOperationalScreen && !hasUberProductText && !hasRoutePairText ->
+                operationalScreen.reason ?: "operational_screen_without_offer_evidence"
+            hasOperationalMoneyText && !hasUberProductText && !hasRoutePairText ->
+                "operational_earnings_money_without_offer_evidence"
+            hasMapEtaRangeText && !hasOfferPriceText && !hasUberProductText && !hasRoutePairText ->
                 "map_eta_range_without_offer_evidence"
-            hasSearchingText && !hasPriceText && !hasUberProductText && !hasRoutePairText ->
+            hasSearchingText && !hasOfferPriceText && !hasUberProductText && !hasRoutePairText ->
                 "searching_text_without_price_product_or_route"
-            !hasPriceText && !hasUberProductText && !hasRoutePairText ->
+            !hasOfferPriceText && !hasUberProductText && !hasRoutePairText ->
                 "button_like_without_price_product_or_route"
             else -> null
         }
         return UberTreeTextSignals(
-            hasPriceText = hasPriceText,
+            hasOfferPriceText = hasOfferPriceText,
+            hasOperationalMoneyText = hasOperationalMoneyText,
             hasUberProductText = hasUberProductText,
             hasRoutePairText = hasRoutePairText,
             hasMapEtaRangeText = hasMapEtaRangeText,
             hasSearchingText = hasSearchingText,
-            rejectionReason = rejectionReason
+            rejectionReason = rejectionReason,
+            operationalScreen = operationalScreen
         )
     }
 
     private data class UberTreeTextSignals(
-        val hasPriceText: Boolean,
+        val hasOfferPriceText: Boolean,
+        val hasOperationalMoneyText: Boolean,
         val hasUberProductText: Boolean,
         val hasRoutePairText: Boolean,
         val hasMapEtaRangeText: Boolean,
         val hasSearchingText: Boolean,
-        val rejectionReason: String?
+        val rejectionReason: String?,
+        val operationalScreen: UberOperationalScreenSignal
     )
+
+    private fun logOperationalScreenSignal(
+        signal: RadarSignal.UberStateChanged,
+        treeTextSignals: UberTreeTextSignals
+    ) {
+        if (!treeTextSignals.operationalScreen.isOperationalScreen) {
+            return
+        }
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_UBER_OPERATIONAL_SCREEN_DETECTED",
+            "reason" to treeTextSignals.operationalScreen.reason,
+            "hasOperationalMoneyText" to treeTextSignals.hasOperationalMoneyText,
+            "hasMapEtaRangeText" to treeTextSignals.hasMapEtaRangeText,
+            "textsPreview" to signal.knownStateTexts.joinToString(",")
+        )
+    }
 
     private fun uberNodeCountBucket(nodeCount: Int): String {
         return when {

@@ -4,6 +4,7 @@ import com.lucastrevvos.kmonemotor.radar.core.RadarFeatureFlags
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
 import com.lucastrevvos.kmonemotor.radar.fingerprint.OfferTextFingerprintKind
 import com.lucastrevvos.kmonemotor.radar.fingerprint.PlatformTextHint
+import com.lucastrevvos.kmonemotor.radar.orchestrator.UberOperationalScreenClassifier
 import com.lucastrevvos.kmonemotor.radar.vision.CropKind
 import kotlin.math.min
 
@@ -31,6 +32,12 @@ class AutomaticCaptureBurstPolicy(
             looksLikeFuelOrPromoScreen(input.rawOcrText)
         ) {
             return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "non_offer_fuel_or_promo_screen")
+        }
+        if (shouldSuppressRecoveryForOperationalScreen(input.rawOcrText)) {
+            return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "operational_screen_recovery_suppressed")
+        }
+        if (shouldSuppressRecoveryForMapSearching(input.rawOcrText)) {
+            return AutomaticCaptureBurstDecision(false, 0L, emptyList(), "map_searching_recovery_suppressed")
         }
         if (input.obstructionSuspected && input.obstructionOverlapsCriticalArea) {
             return AutomaticCaptureBurstDecision(
@@ -164,6 +171,24 @@ class AutomaticCaptureBurstPolicy(
         val maxAttempts: Int = RadarFeatureFlags.AUTO_CAPTURE_BURST_MAX_ATTEMPTS,
         val maxAgeMs: Long = RadarFeatureFlags.AUTO_CAPTURE_BURST_MAX_AGE_MS
     )
+
+    private fun shouldSuppressRecoveryForOperationalScreen(rawText: String): Boolean {
+        val signal = UberOperationalScreenClassifier.classify(listOf(rawText))
+        return signal.isOperationalScreen && !containsStrongOfferSignal(rawText)
+    }
+
+    private fun shouldSuppressRecoveryForMapSearching(rawText: String): Boolean {
+        val normalized = rawText.lowercase()
+        val hasSearching = normalized.contains("buscando") || normalized.contains("procurando viagens")
+        val hasMapLike = MAP_HOME_PATTERNS.any { it.containsMatchIn(normalized) }
+        val hasOfferSemantics = containsStrongOfferSignal(rawText) || hasRoutePairText(rawText)
+        return (hasSearching || hasMapLike) && !hasOfferSemantics
+    }
+
+    private fun hasRoutePairText(rawText: String): Boolean {
+        val normalized = rawText.lowercase()
+        return Regex("""\d+\s*min(?:utos?)?\s*\(\s*\d+[,.]?\d*\s*(km|m)\s*\)""").containsMatchIn(normalized)
+    }
 
     private companion object {
         val MAP_HOME_PATTERNS = listOf(

@@ -331,6 +331,110 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
+    fun uberDominantOperationalPlusMoney_doesNotCreateDiagnosticCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("ganhos", "oportunidades", "+R$ 2", "pagina inicial", "mensagens", "menu")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantOperationalHighEarningsMoney_doesNotCreateDiagnosticCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("agora seus ganhos sao mais altos", "os ganhos das viagens sao altos em florianopolis", "+R$ 6,50", "+R$ 1,75")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantOfflineScreen_doesNotCreateDiagnosticCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.OFFLINE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.OFFLINE,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("voce esta offline", "comecar", "ver tempo ao volante", "registro de viagens", "1-13 min", "1-5 min")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantOperationalMenuScreen_doesNotCreateDiagnosticCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L }
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("indicado para voce", "confira as tendencias de ganhos", "veja as proximas promocoes", "ver tempo ao volante", "ficar offline")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
     fun uberDominantEtaRangeWithoutOfferEvidence_doesNotCreateDiagnosticCapture() {
         val capturer = RecordingScreenshotCapturer()
         val orchestrator = RadarCaptureOrchestrator(
@@ -379,6 +483,230 @@ class RadarCaptureOrchestratorTest {
             )
         )
 
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantEtaRangeAfterSearchingDisappeared_startsPreOfferWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("1-12 min", "1-5 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(1_200L)
+
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG, capturer.requests.single().triggerSource)
+        assertEquals(
+            "FLOATING_BOUNDS_EXPANDED,LOWER_HALF,LOWER_THIRD,CENTER_CARD_AREA",
+            capturer.requests.single().metadataNotes["preOfferWatchdogPreferredCropOrder"]
+        )
+    }
+
+    @Test
+    fun uberDominantOfflineOperationalScreen_doesNotStartPreOfferWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.OFFLINE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.OFFLINE,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("voce esta offline", "comecar", "1-13 min", "1-5 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-13 min")
+            )
+        )
+
+        scheduler.advanceBy(6_000L)
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantOperationalMoneyScreen_doesNotStartPreOfferWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("ganhos", "oportunidades", "+R$ 2", "1-12 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        scheduler.advanceBy(6_000L)
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun preOfferWatchdog_schedulesAtMostThreeProbes() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("1-12 min", "1-5 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        scheduler.advanceBy(1_200L)
+        scheduler.advanceBy(1_800L)
+        scheduler.advanceBy(3_000L)
+        scheduler.advanceBy(10_000L)
+
+        assertEquals(3, capturer.requests.size)
+        assertTrue(capturer.requests.all { it.triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG })
+    }
+
+    @Test
+    fun preOfferWatchdog_cancelsWhenManualAnalysisIsRequested() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("1-12 min", "1-5 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        val epoch = AnalysisEpochController.bumpManualEpoch()
+        orchestrator.requestManualAnalysis(
+            ManualAnalysisContext(
+                requestedAtMs = 3_100L,
+                analysisEpoch = epoch,
+                source = "test",
+                dominantPackage = "com.ubercab.driver",
+                floatingPackage = "com.app99.driver",
+                floatingBounds = "0 0 100 100",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                platformHint = PlatformHint.UBER
+            )
+        )
+
+        scheduler.advanceBy(10_000L)
+
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.MANUAL_SCREEN_ANALYSIS, capturer.requests.single().triggerSource)
+    }
+
+    @Test
+    fun preOfferWatchdog_cancelsWhenAutoOfferIsCaptured() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("1-12 min", "1-5 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                fingerprintKind = "OFFER_LIKE",
+                wasPersisted = true,
+                finalReason = "saved",
+                timestampMs = 3_200L
+            )
+        )
+
+        scheduler.advanceBy(10_000L)
         assertTrue(capturer.requests.isEmpty())
     }
 
@@ -501,6 +829,37 @@ class RadarCaptureOrchestratorTest {
         assertEquals(1, capturer.requests.size)
         assertEquals(TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC, capturer.requests.single().triggerSource)
         assertTrue(capturer.requests.single().offerCycleClassification?.shouldPreferForOcr == true)
+    }
+
+    @Test
+    fun uberDominantPriorityPriceAndRoute_createsDiagnosticCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 7,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 2,
+                buttonLikeNodeCount = 2,
+                bottomHalfTextNodeCount = 7,
+                knownStateTexts = listOf("priority", "r$ 12", "4 min (2.2 km)")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(300L)
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC, capturer.requests.single().triggerSource)
     }
 
     @Test
@@ -644,6 +1003,54 @@ class RadarCaptureOrchestratorTest {
         scheduler.advanceBy(299L)
         assertTrue(capturer.requests.isEmpty())
         scheduler.advanceBy(1L)
+        assertEquals(1, capturer.requests.size)
+    }
+
+    @Test
+    fun uberDominantCaptureInProgress_blocksReentryCandidate() {
+        var nowMs = 3_000L
+        val capturer = RecordingScreenshotCapturer(autoFinish = false)
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { nowMs },
+            stabilizationScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 7,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 1,
+                numericTextNodeCount = 2,
+                buttonLikeNodeCount = 2,
+                bottomHalfTextNodeCount = 7,
+                knownStateTexts = listOf("priority", "r$ 12", "4 min (2.2 km)")
+            )
+        )
+        scheduler.advanceBy(300L)
+        assertEquals(1, capturer.requests.size)
+
+        nowMs = 3_200L
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 25,
+                visibleTextNodeCount = 7,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 7,
+                numericTextNodeCount = 2,
+                buttonLikeNodeCount = 2,
+                bottomHalfTextNodeCount = 7,
+                knownStateTexts = listOf("uberx", "r$ 8,34", "6 min (1.7 km)")
+            )
+        )
+        scheduler.advanceBy(300L)
+
         assertEquals(1, capturer.requests.size)
     }
 

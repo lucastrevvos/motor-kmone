@@ -102,7 +102,9 @@ class RadarAutoCaptureStateMachine(
     }
 
     fun onPipelineFinished(result: AutoCapturePipelineResult): List<RadarAutoCaptureTransition> {
-        if (result.triggerSource != TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC) {
+        if (result.triggerSource != TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
+            result.triggerSource != TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG
+        ) {
             return emptyList()
         }
         val transitions = mutableListOf<RadarAutoCaptureTransition>()
@@ -134,8 +136,18 @@ class RadarAutoCaptureStateMachine(
     }
 
     fun shouldBlockAutomaticCapture(nowMs: Long): Boolean {
-        return state == RadarAutoCaptureState.POST_OFFER_COOLDOWN &&
-            cooldownUntilMs?.let { nowMs < it } == true
+        return state == RadarAutoCaptureState.CAPTURE_IN_PROGRESS ||
+            (state == RadarAutoCaptureState.POST_OFFER_COOLDOWN &&
+                cooldownUntilMs?.let { nowMs < it } == true)
+    }
+
+    fun automaticBlockReason(nowMs: Long): String? {
+        return when {
+            state == RadarAutoCaptureState.CAPTURE_IN_PROGRESS -> "capture_already_in_progress"
+            state == RadarAutoCaptureState.POST_OFFER_COOLDOWN &&
+                cooldownUntilMs?.let { nowMs < it } == true -> "recent_offer_captured"
+            else -> null
+        }
     }
 
     fun snapshot(): RadarAutoCaptureStateSnapshot {

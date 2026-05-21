@@ -34,6 +34,7 @@ class ScreenObservationFactory {
             metadata = ObservationMetadata(
                 notes = buildMap {
                     result.savedDebugPath?.let { put("savedDebugPath", it) }
+                    putAll(request.metadataNotes)
                 },
                 offerCycleClassification = request.offerCycleClassification,
                 analysisEpoch = request.analysisEpoch,

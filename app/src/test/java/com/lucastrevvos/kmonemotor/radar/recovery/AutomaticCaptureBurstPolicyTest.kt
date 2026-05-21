@@ -13,26 +13,27 @@ class AutomaticCaptureBurstPolicyTest {
     private val policy = AutomaticCaptureBurstPolicy()
 
     @Test
-    fun unknownUberWithFicarOnline_schedulesBurst() {
+    fun unknownUberWithFicarOnline_suppressesRecovery() {
         val decision = policy.evaluate(input("Ficar online", OfferTextFingerprintKind.UNKNOWN), nowMs = 2_000L)
 
-        assertTrue(decision.shouldScheduleBurst)
-        assertEquals(300L, decision.delayMs)
-        assertEquals("map_home_contamination", decision.reason)
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("map_searching_recovery_suppressed", decision.reason)
     }
 
     @Test
-    fun unknownUberWithBuscando_schedulesBurst() {
+    fun unknownUberWithBuscando_suppressesRecovery() {
         val decision = policy.evaluate(input("Buscando corridas em Jurere", OfferTextFingerprintKind.UNKNOWN), nowMs = 2_000L)
 
-        assertTrue(decision.shouldScheduleBurst)
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("operational_screen_recovery_suppressed", decision.reason)
     }
 
     @Test
-    fun unknownUberWithMapText_schedulesBurst() {
+    fun unknownUberWithMapText_suppressesRecovery() {
         val decision = policy.evaluate(input("Praia de Canajure Sapiens Parque SC-401", OfferTextFingerprintKind.UNKNOWN), nowMs = 2_000L)
 
-        assertTrue(decision.shouldScheduleBurst)
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("map_searching_recovery_suppressed", decision.reason)
     }
 
     @Test
@@ -117,13 +118,14 @@ class AutomaticCaptureBurstPolicyTest {
     }
 
     @Test
-    fun nonOfferWithOnlineOnStrongUber_canScheduleBurst() {
+    fun nonOfferWithOnlineOnStrongUber_suppressesRecovery() {
         val decision = policy.evaluate(
             input("Ficar online", OfferTextFingerprintKind.NON_OFFER),
             nowMs = 2_000L
         )
 
-        assertTrue(decision.shouldScheduleBurst)
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("map_searching_recovery_suppressed", decision.reason)
     }
 
     @Test
@@ -137,9 +139,23 @@ class AutomaticCaptureBurstPolicyTest {
             nowMs = 2_000L
         )
 
-        assertTrue(decision.shouldScheduleBurst)
-        assertEquals("map_home_contamination", decision.reason)
-        assertEquals(CropKind.LOWER_HALF, decision.preferredCropOrder.first())
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("operational_screen_recovery_suppressed", decision.reason)
+    }
+
+    @Test
+    fun nonOfferOperationalScreen_suppressesRecovery() {
+        val decision = policy.evaluate(
+            input(
+                rawText = "Ganhos Oportunidades +R$ 2 Pagina inicial Mensagens Menu",
+                fingerprintKind = OfferTextFingerprintKind.NON_OFFER,
+                triggerSource = TriggerSource.UBER_AUTO_BURST_RECOVERY
+            ),
+            nowMs = 2_000L
+        )
+
+        assertFalse(decision.shouldScheduleBurst)
+        assertEquals("operational_screen_recovery_suppressed", decision.reason)
     }
 
     @Test
@@ -234,7 +250,7 @@ class AutomaticCaptureBurstPolicyTest {
     @Test
     fun floatingOver99UsesLowerHalfFirst() {
         val decision = policy.evaluate(
-            input("Ficar online", OfferTextFingerprintKind.UNKNOWN),
+            input("", OfferTextFingerprintKind.UNKNOWN),
             nowMs = 2_000L
         )
 
@@ -245,7 +261,7 @@ class AutomaticCaptureBurstPolicyTest {
     fun dominantUsesLowerHalfFirstForBurst() {
         val decision = policy.evaluate(
             input(
-                "Ficar online",
+                "",
                 OfferTextFingerprintKind.UNKNOWN,
                 triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC
             ),

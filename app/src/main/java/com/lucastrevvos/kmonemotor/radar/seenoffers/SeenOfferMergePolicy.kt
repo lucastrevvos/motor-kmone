@@ -199,15 +199,40 @@ class SeenOfferMergePolicy(
     }
 
     private fun inferPlatform(primary: SeenOffer, counterpart: SeenOffer): RidePlatform {
+        inferPlatformFromText(primary)?.let { inferredFromText ->
+            if (primary.platform == RidePlatform.UNKNOWN || inferredFromText != primary.platform) {
+                return inferredFromText
+            }
+        }
         if (primary.platform != RidePlatform.UNKNOWN) return primary.platform
         inferPlatformFromTrigger(primary.sourceTrigger)?.let { return it }
         if (abs(primary.createdAtMs - counterpart.createdAtMs) <= duplicateWindowMs &&
             similarMoney(primary.price, counterpart.price) &&
-            counterpart.platform != RidePlatform.UNKNOWN
+            counterpart.platform != RidePlatform.UNKNOWN &&
+            (similarValuePerKm(primary.valuePerKm, counterpart.valuePerKm) ||
+                similarDistance(primary.pickupDistanceKm, counterpart.pickupDistanceKm) ||
+                similarDistance(primary.tripDistanceKm, counterpart.tripDistanceKm) ||
+                similarDistance(primary.totalDistanceKm, counterpart.totalDistanceKm) ||
+                inferPlatformFromText(primary) == counterpart.platform)
         ) {
             return counterpart.platform
         }
         return RidePlatform.UNKNOWN
+    }
+
+    private fun inferPlatformFromText(offer: SeenOffer): RidePlatform? {
+        val normalized = listOfNotNull(
+            offer.rawTextPreview,
+            offer.productName,
+            offer.originPreview,
+            offer.destinationPreview
+        ).joinToString(" ").lowercase()
+        return when {
+            strongNinetyNineSignals.any { it.containsMatchIn(normalized) } -> RidePlatform.NINETY_NINE
+            hasUberEnviosStructure(normalized) -> RidePlatform.UBER
+            strongUberSignals.any { it.containsMatchIn(normalized) } -> RidePlatform.UBER
+            else -> null
+        }
     }
 
     private fun inferPlatformFromTrigger(triggerSource: String?): RidePlatform? {
@@ -219,9 +244,54 @@ class SeenOfferMergePolicy(
         }
     }
 
+    private fun similarValuePerKm(first: Double?, second: Double?): Boolean {
+        if (first == null || second == null) return false
+        return abs(first - second) <= 0.15
+    }
+
+    private fun hasUberEnviosStructure(normalized: String): Boolean {
+        val hasEnviosSignal = enviosUberSignals.any { it.containsMatchIn(normalized) }
+        val hasOfferPrice = Regex("r\\$\\s*\\d+[,.]\\d+").containsMatchIn(normalized)
+        val hasRouteSignal = Regex("\\d+\\s*min(?:utos)?\\s*\\(\\s*\\d+[,.]?\\d*\\s*(?:km|m)\\s*\\)").containsMatchIn(normalized)
+        val hasVerifiedSignal = Regex("\\b[o0]?\\s*verificado\\b|\\bverificado\\b").containsMatchIn(normalized)
+        val hasRatingSignal = Regex("\\b\\d+[,.]\\d{1,2}\\s*\\(\\d+\\)").containsMatchIn(normalized)
+        return hasEnviosSignal && hasOfferPrice && hasRouteSignal && (hasVerifiedSignal || hasRatingSignal)
+    }
+
     data class PlatformResolution(
         val effectiveCandidatePlatform: RidePlatform,
         val effectiveExistingPlatform: RidePlatform,
         val reason: String
     )
+
+    private companion object {
+        val strongNinetyNineSignals = listOf(
+            Regex("r\\$\\s*[0-9]+(?:[.,][0-9]{1,2})?\\s*/\\s*km"),
+            Regex("cpf\\s*e?\\s*cart[aã]o\\s*verif|cpf\\s*verif"),
+            Regex("cart[aã]o\\s*verif"),
+            Regex("\\bdinheiro\\b"),
+            Regex("corrida longa"),
+            Regex("passageiro novo"),
+            Regex("\\b\\d+\\s*corridas\\b"),
+            Regex("pagamento no app"),
+            Regex("taxa de deslocamento")
+        )
+        val strongUberSignals = listOf(
+            Regex("\\buberx\\b"),
+            Regex("\\buber\\b"),
+            Regex("\\bpriority\\b"),
+            Regex("\\bcomfort\\b"),
+            Regex("\\bblack\\b"),
+            Regex("\\bflash\\b"),
+            Regex("\\bmoto\\b"),
+            Regex("\\bexclusivo\\b")
+        )
+        val enviosUberSignals = listOf(
+            Regex("\\benvios\\b"),
+            Regex("\\benvios\\s+carro\\b"),
+            Regex("\\benvios\\s+carro\\s+exclusivo\\b"),
+            Regex("\\bcarro\\s+exclusivo\\b"),
+            Regex("\\bexclusivo\\b")
+        )
+    }
 }
