@@ -42,6 +42,7 @@ import com.lucastrevvos.kmonemotor.radar.ocr.OcrDebugWriter
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrObservation
 import com.lucastrevvos.kmonemotor.radar.ocr.OcrRunPolicy
 import com.lucastrevvos.kmonemotor.radar.orchestrator.ManualAnalysisContext
+import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoCapturePipelineResult
 import com.lucastrevvos.kmonemotor.radar.orchestrator.RadarCaptureOrchestrator
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserDebugWriter
@@ -2256,6 +2257,15 @@ class KmRadarAccessibilityService : AccessibilityService() {
             ?: decisionReason
             ?: parserReason
             ?: fingerprint.reason
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = observation.triggerSource,
+                fingerprintKind = fingerprint.kind.name,
+                wasPersisted = persistenceResult.persisted,
+                finalReason = resolvedFinalReason,
+                timestampMs = clock.nowMs()
+            )
+        )
         RadarLogger.i(
             "KM_V2_PIPELINE",
             "KM_V2_OFFER_PIPELINE_FINAL_RESULT",
