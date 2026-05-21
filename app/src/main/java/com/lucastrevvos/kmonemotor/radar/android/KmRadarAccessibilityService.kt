@@ -47,6 +47,7 @@ import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserDebugWriter
 import com.lucastrevvos.kmonemotor.radar.presentation.DecisionPresentationDebugWriter
 import com.lucastrevvos.kmonemotor.radar.presentation.DecisionPresentationProcessor
+import com.lucastrevvos.kmonemotor.radar.presentation.OverlayPresentationStatePolicy
 import com.lucastrevvos.kmonemotor.radar.piu.PiuOverlayRuntime
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstInput
 import com.lucastrevvos.kmonemotor.radar.recovery.AutomaticCaptureBurstPolicy
@@ -1435,13 +1436,16 @@ class KmRadarAccessibilityService : AccessibilityService() {
                               expiresAtMs = representation.expiresAtMs,
                               source = representation.source.name
                           )
-                          DecisionOverlayRuntime.get(this).showPresentation(representation)
+                          val representationShown =
+                              DecisionOverlayRuntime.get(this).showPresentation(representation)
                           RadarLogger.i(
                               "KM_V2_SEEN",
                               "KM_V2_SEEN_OFFER_REPRESENTATION_SHOWN",
                               "existingSeenOfferId" to existingSeenOfferId,
                               "overlayKind" to representation.kind
                           )
+                          val representationPresentationStatus =
+                              if (representationShown) "shown_from_saved_offer" else "skipped"
                           logOfferPipelineFinalResult(
                               observation = observation,
                               fingerprint = fingerprint,
@@ -1449,9 +1453,13 @@ class KmRadarAccessibilityService : AccessibilityService() {
                               parserReason = parserResult.reason,
                               decisionStatus = "reused_seen_offer",
                               decisionReason = persistenceResult.reason,
-                              presentationStatus = "shown_from_saved_offer",
+                              presentationStatus = representationPresentationStatus,
                               presentationReason = representation.kind.name,
-                              wasOverlayShown = true,
+                              wasOverlayShown = OverlayPresentationStatePolicy.wasOverlayShown(
+                                  overlayKind = representation.kind.name,
+                                  presentationStatus = representationPresentationStatus,
+                                  overlayShownByController = representationShown
+                              ),
                               overlayKind = representation.kind.name,
                               burstOutcome = burstOutcome,
                               persistenceResult = persistenceResult,
@@ -1496,11 +1504,18 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     computedOverlayKind = presentationResult.presentation?.kind?.name,
                     isManual = observation.isManual
                 )
-                var overlayShown = false
+                var overlayShownByController = false
                 presentationResult.presentation?.takeIf { overlayDecision.shouldShowOverlay }?.let { presentation ->
-                    DecisionOverlayRuntime.get(this).showPresentation(presentation)
-                    overlayShown = true
+                    overlayShownByController =
+                        DecisionOverlayRuntime.get(this).showPresentation(presentation)
                 }
+                val resolvedPresentationStatus =
+                    if (overlayDecision.shouldShowOverlay) presentationResult.status else "skipped"
+                val resolvedWasOverlayShown = OverlayPresentationStatePolicy.wasOverlayShown(
+                    overlayKind = overlayDecision.overlayKind,
+                    presentationStatus = resolvedPresentationStatus,
+                    overlayShownByController = overlayShownByController
+                )
                 if (!overlayDecision.shouldShowOverlay) {
                     RadarLogger.i(
                         "KM_V2_PRESENTATION",
@@ -1534,9 +1549,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     parserReason = parserResult.reason,
                     decisionStatus = decisionResult.status,
                     decisionReason = decisionResult.result?.decision?.name ?: decisionResult.reason,
-                    presentationStatus = if (overlayDecision.shouldShowOverlay) presentationResult.status else "skipped",
+                    presentationStatus = resolvedPresentationStatus,
                     presentationReason = presentationResult.presentation?.kind?.name ?: presentationResult.reason,
-                      wasOverlayShown = overlayShown,
+                      wasOverlayShown = resolvedWasOverlayShown,
                       overlayKind = overlayDecision.overlayKind,
                       burstOutcome = burstOutcome,
                       persistenceResult = persistenceResult,
