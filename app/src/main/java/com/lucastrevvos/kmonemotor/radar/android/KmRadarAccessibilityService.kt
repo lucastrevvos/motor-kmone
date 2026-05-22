@@ -780,6 +780,28 @@ class KmRadarAccessibilityService : AccessibilityService() {
             rawTextPreview = null,
             policyReason = policy.reason
         )
+        if (observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
+            effectiveVisualResult.bestCandidate == null
+        ) {
+            orchestrator.onAutoCapturePipelineFinished(
+                AutoCapturePipelineResult(
+                    triggerSource = observation.triggerSource,
+                    fingerprintKind = null,
+                    wasPersisted = false,
+                    finalReason = "no_valid_crop_candidate",
+                    timestampMs = clock.nowMs(),
+                    visualReason = "no_valid_crop_candidate",
+                    sourceGroupId = observation.metadata.notes["ninetyNineVisualProbeSourceGroupId"] ?: observation.captureRequestId,
+                    retryAttempt = observation.metadata.notes["ninetyNineVisualProbeRetryAttempt"]?.toIntOrNull() ?: 0,
+                    dominantPackage = observation.dominantPackage,
+                    floatingPackage = observation.floatingPackage,
+                    floatingBounds = observation.floatingBounds,
+                    floatingKind = observation.floatingKind,
+                    recentKmOneOverlayVisible = isRecentKmOneOverlayVisibleForNinetyNine(observation)
+                )
+            )
+            return
+        }
         if (!policy.shouldRun) {
             return
         }
@@ -1481,6 +1503,22 @@ class KmRadarAccessibilityService : AccessibilityService() {
             if (observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
                 fingerprint.kind != OfferTextFingerprintKind.OFFER_LIKE
             ) {
+                val sourceSnapshot = automaticCaptureSourcesByObservationId[observation.observationId]
+                val retryAttempt = sourceSnapshot?.sourceObservation?.metadata?.notes
+                    ?.get("ninetyNineVisualProbeRetryAttempt")
+                    ?.toIntOrNull() ?: 0
+                if (retryAttempt > 0) {
+                    autoMissDiagnostics.recordAutoTrace(
+                        AutoAttemptTrace(
+                            timestampMs = clock.nowMs(),
+                            triggerSource = observation.triggerSource,
+                            stage = "retry_result_failed",
+                            reason = "fingerprint_not_offer_like",
+                            fingerprintKind = fingerprint.kind.name,
+                            platform = fingerprint.platformTextHint.name
+                        )
+                    )
+                }
                 RadarLogger.i(
                     "KM_V2_AUTO",
                     "KM_V2_99_VISUAL_PROBE_RESULT",
@@ -2444,6 +2482,11 @@ class KmRadarAccessibilityService : AccessibilityService() {
         finalReason: String? = null
     ) {
         val sourceSnapshot = consumeAutomaticCaptureSource(observation.observationId)
+        val sourceObservation = sourceSnapshot?.sourceObservation
+        val sourceGroupId = sourceObservation?.metadata?.notes?.get("ninetyNineVisualProbeSourceGroupId")
+            ?: observation.captureRequestId
+        val retryAttempt = sourceObservation?.metadata?.notes?.get("ninetyNineVisualProbeRetryAttempt")
+            ?.toIntOrNull() ?: 0
         val obstructionResult = sourceSnapshot?.obstructionResult
         val resolvedFinalReason = finalReason
             ?: burstOutcome.reason?.takeIf { burstOutcome.scheduled }
@@ -2457,7 +2500,14 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 fingerprintKind = fingerprint.kind.name,
                 wasPersisted = persistenceResult.persisted,
                 finalReason = resolvedFinalReason,
-                timestampMs = clock.nowMs()
+                timestampMs = clock.nowMs(),
+                sourceGroupId = sourceGroupId,
+                retryAttempt = retryAttempt,
+                dominantPackage = sourceObservation?.dominantPackage,
+                floatingPackage = sourceObservation?.floatingPackage,
+                floatingBounds = sourceObservation?.floatingBounds,
+                floatingKind = sourceObservation?.floatingKind,
+                recentKmOneOverlayVisible = sourceObservation?.let { isRecentKmOneOverlayVisibleForNinetyNine(it) } ?: false
             )
         )
         if (!observation.isManual) {
@@ -2491,6 +2541,26 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     "persistReason" to persistenceResult.reason,
                     "nonOfferReason" to resolvedFinalReason
                 )
+                if (retryAttempt > 0) {
+                    RadarLogger.i(
+                        "KM_V2_AUTO",
+                        "KM_V2_99_VISUAL_PROBE_RETRY_RESULT",
+                        "fingerprintKind" to fingerprint.kind,
+                        "platform" to fingerprint.platformTextHint,
+                        "persistReason" to persistenceResult.reason
+                    )
+                    autoMissDiagnostics.recordAutoTrace(
+                        AutoAttemptTrace(
+                            timestampMs = clock.nowMs(),
+                            triggerSource = observation.triggerSource,
+                            stage = if (persistenceResult.persisted) "retry_result_success" else "retry_result_failed",
+                            reason = resolvedFinalReason,
+                            fingerprintKind = fingerprint.kind.name,
+                            platform = fingerprint.platformTextHint.name,
+                            persistReason = persistenceResult.reason
+                        )
+                    )
+                }
             }
         } else if (
             fingerprint.kind == OfferTextFingerprintKind.OFFER_LIKE &&

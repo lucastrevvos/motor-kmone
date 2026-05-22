@@ -335,7 +335,7 @@ class AutoMissDiagnosticsTest {
     }
 
     @Test
-    fun manualNinetyNineSuccessAfterProbeNoValidCrop_reportsSpecificCause() {
+    fun manualNinetyNineSuccessAfterProbeNoValidCropWithoutRetry_reportsRetryNotStarted() {
         diagnostics.recordAutoTrace(
             AutoAttemptTrace(
                 timestampMs = 12_000L,
@@ -364,6 +364,75 @@ class AutoMissDiagnosticsTest {
             timestampMs = 20_000L
         )
 
-        assertEquals("ninety_nine_probe_no_valid_crop_candidate", diagnosis.likelyCause)
+        assertEquals("ninety_nine_probe_retry_not_started", diagnosis.likelyCause)
+    }
+
+    @Test
+    fun manualNinetyNineSuccessAfterRetryEligibleFailureWithoutRetry_reportsRetryNotStarted() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_000L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "pipeline_final",
+                reason = "fingerprint_not_offer_like",
+                persistReason = "fingerprint_not_offer_like"
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-99-3",
+            manualPlatform = "NINETY_NINE",
+            manualPrice = 10.10,
+            manualDistances = "4.4km,5.6km",
+            manualTimes = "11min,10min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("ninety_nine_probe_retry_not_started", diagnosis.likelyCause)
+    }
+
+    @Test
+    fun manualNinetyNineSuccessAfterRetryFailure_reportsRetryFailed() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_000L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "pipeline_final",
+                reason = "fingerprint_not_offer_like",
+                persistReason = "fingerprint_not_offer_like"
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_800L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "retry_started",
+                reason = "no_valid_crop_candidate_or_unknown"
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 13_100L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "retry_result_failed",
+                reason = "fingerprint_not_offer_like",
+                persistReason = "fingerprint_not_offer_like"
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-99-4",
+            manualPlatform = "NINETY_NINE",
+            manualPrice = 10.10,
+            manualDistances = "4.4km,5.6km",
+            manualTimes = "11min,10min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("ninety_nine_probe_retry_failed", diagnosis.likelyCause)
     }
 }

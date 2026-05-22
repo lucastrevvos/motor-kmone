@@ -238,6 +238,194 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
+    fun ninetyNineVisualProbeFingerprintNotOfferLike_schedulesOneRetry() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 11,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+        val originalRequest = capturer.requests.first()
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                fingerprintKind = "UNKNOWN",
+                wasPersisted = false,
+                finalReason = "fingerprint_not_offer_like",
+                timestampMs = 2_500L,
+                sourceGroupId = originalRequest.metadataNotes["ninetyNineVisualProbeSourceGroupId"],
+                retryAttempt = 0,
+                dominantPackage = originalRequest.dominantPackage,
+                floatingPackage = originalRequest.floatingPackage,
+                floatingBounds = originalRequest.floatingBounds,
+                floatingKind = originalRequest.floatingKind
+            )
+        )
+
+        scheduler.advanceBy(799L)
+        assertEquals(1, capturer.requests.size)
+        scheduler.advanceBy(1L)
+
+        assertEquals(2, capturer.requests.size)
+        assertEquals(
+            "LOWER_HALF,CENTER_CARD_AREA,FULL_DEBUG",
+            capturer.requests[1].metadataNotes["ninetyNineVisualProbePreferredCropOrder"]
+        )
+        assertEquals("1", capturer.requests[1].metadataNotes["ninetyNineVisualProbeRetryAttempt"])
+    }
+
+    @Test
+    fun ninetyNineVisualProbeNoValidCropCandidate_schedulesOneRetry() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 11,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+        val originalRequest = capturer.requests.first()
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                fingerprintKind = null,
+                wasPersisted = false,
+                finalReason = "no_valid_crop_candidate",
+                timestampMs = 2_500L,
+                visualReason = "no_valid_crop_candidate",
+                sourceGroupId = originalRequest.metadataNotes["ninetyNineVisualProbeSourceGroupId"],
+                retryAttempt = 0,
+                dominantPackage = originalRequest.dominantPackage,
+                floatingPackage = originalRequest.floatingPackage,
+                floatingBounds = originalRequest.floatingBounds,
+                floatingKind = originalRequest.floatingKind
+            )
+        )
+        scheduler.advanceBy(800L)
+
+        assertEquals(2, capturer.requests.size)
+        assertEquals("1", capturer.requests[1].metadataNotes["ninetyNineVisualProbeRetryAttempt"])
+    }
+
+    @Test
+    fun ninetyNineVisualProbeRetryFailure_doesNotScheduleSecondRetry() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 11,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+        val originalRequest = capturer.requests.first()
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                fingerprintKind = "UNKNOWN",
+                wasPersisted = false,
+                finalReason = "fingerprint_not_offer_like",
+                timestampMs = 2_500L,
+                sourceGroupId = originalRequest.metadataNotes["ninetyNineVisualProbeSourceGroupId"],
+                retryAttempt = 0,
+                dominantPackage = originalRequest.dominantPackage,
+                floatingPackage = originalRequest.floatingPackage,
+                floatingBounds = originalRequest.floatingBounds,
+                floatingKind = originalRequest.floatingKind
+            )
+        )
+        scheduler.advanceBy(800L)
+        capturer.finish(1, ScreenshotFinishStatus.SUCCESS)
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                fingerprintKind = "UNKNOWN",
+                wasPersisted = false,
+                finalReason = "fingerprint_not_offer_like",
+                timestampMs = 3_500L,
+                sourceGroupId = originalRequest.metadataNotes["ninetyNineVisualProbeSourceGroupId"],
+                retryAttempt = 1,
+                dominantPackage = originalRequest.dominantPackage,
+                floatingPackage = originalRequest.floatingPackage,
+                floatingBounds = originalRequest.floatingBounds,
+                floatingKind = originalRequest.floatingKind
+            )
+        )
+        scheduler.advanceBy(5_000L)
+
+        assertEquals(2, capturer.requests.size)
+    }
+
+    @Test
+    fun ninetyNineVisualProbeRecentOverlayVisible_doesNotScheduleRetry() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 11,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+        capturer.finish(0, ScreenshotFinishStatus.SUCCESS)
+        val originalRequest = capturer.requests.first()
+        orchestrator.onAutoCapturePipelineFinished(
+            AutoCapturePipelineResult(
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                fingerprintKind = "UNKNOWN",
+                wasPersisted = false,
+                finalReason = "fingerprint_not_offer_like",
+                timestampMs = 2_500L,
+                sourceGroupId = originalRequest.metadataNotes["ninetyNineVisualProbeSourceGroupId"],
+                retryAttempt = 0,
+                dominantPackage = originalRequest.dominantPackage,
+                floatingPackage = originalRequest.floatingPackage,
+                floatingBounds = originalRequest.floatingBounds,
+                floatingKind = originalRequest.floatingKind,
+                recentKmOneOverlayVisible = true
+            )
+        )
+        scheduler.advanceBy(5_000L)
+
+        assertEquals(1, capturer.requests.size)
+    }
+
+    @Test
     fun uberDominantSearchingDisappearedEmptyTree_startsPreOfferWatchdogWithoutImmediateCapture() {
         val capturer = RecordingScreenshotCapturer()
         val scheduler = FakeStabilizationScheduler()

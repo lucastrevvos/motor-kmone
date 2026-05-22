@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.orchestrator
 
+import com.lucastrevvos.kmonemotor.radar.core.FloatingWindowKind
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
 
 enum class RadarAutoCaptureState {
@@ -54,7 +55,15 @@ data class AutoCapturePipelineResult(
     val fingerprintKind: String?,
     val wasPersisted: Boolean,
     val finalReason: String?,
-    val timestampMs: Long
+    val timestampMs: Long,
+    val visualReason: String? = null,
+    val sourceGroupId: String? = null,
+    val retryAttempt: Int = 0,
+    val dominantPackage: String? = null,
+    val floatingPackage: String? = null,
+    val floatingBounds: String? = null,
+    val floatingKind: FloatingWindowKind? = null,
+    val recentKmOneOverlayVisible: Boolean = false
 )
 
 class RadarAutoCaptureStateMachine(

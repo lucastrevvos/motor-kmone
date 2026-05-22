@@ -38,6 +38,7 @@ class RadarCaptureOrchestrator(
     private val finishedCaptureIds = mutableSetOf<String>()
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
     private val ninetyNineVisualProbeCooldownBySignature = mutableMapOf<String, Long>()
+    private val ninetyNineVisualProbeRetryScheduledByGroupId = mutableSetOf<String>()
     private var pendingUberOfferCardStabilization: UberOfferCardStabilization? = null
     private var pendingPreOfferWatchdog: PreOfferWatchdogSession? = null
     private val autoEvidenceAccumulator = RadarAutoCaptureEvidenceAccumulator()
@@ -102,6 +103,7 @@ class RadarCaptureOrchestrator(
         ) {
             return
         }
+        maybeScheduleNinetyNineVisualProbeRetry(result)
         if (result.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
             result.finalReason == "ninety_nine_map_searching_state"
         ) {
@@ -1292,10 +1294,14 @@ class RadarCaptureOrchestrator(
             floatingBounds = signal.floatingBounds,
             floatingKind = signal.floatingKind,
             reason = "tree_structure_changed_without_text",
-            metadataNotes = mapOf(
-                "ninetyNineVisualProbePreferredCropOrder" to NINETY_NINE_VISUAL_PROBE_PREFERRED_CROP_ORDER.joinToString(",")
-            ),
+            metadataNotes = emptyMap(),
             analysisEpoch = epoch
+        )
+        val finalizedRequest = request.copy(
+            metadataNotes = mapOf(
+                "ninetyNineVisualProbePreferredCropOrder" to NINETY_NINE_VISUAL_PROBE_PREFERRED_CROP_ORDER.joinToString(","),
+                "ninetyNineVisualProbeSourceGroupId" to request.id
+            )
         )
         ninetyNineVisualProbeCooldownBySignature[signature] = nowMs
         RadarLogger.i(
@@ -1303,7 +1309,116 @@ class RadarCaptureOrchestrator(
             "KM_V2_99_VISUAL_PROBE_REQUESTED",
             "reason" to "tree_structure_changed_without_text"
         )
-        return request
+        return finalizedRequest
+    }
+
+    private fun maybeScheduleNinetyNineVisualProbeRetry(result: AutoCapturePipelineResult) {
+        if (result.triggerSource != TriggerSource.NINETY_NINE_VISUAL_PROBE ||
+            result.wasPersisted ||
+            result.retryAttempt > 0
+        ) {
+            return
+        }
+        val sourceGroupId = result.sourceGroupId ?: return
+        if (ninetyNineVisualProbeRetryScheduledByGroupId.contains(sourceGroupId)) {
+            return
+        }
+        val eligibleFailure = result.visualReason == "no_valid_crop_candidate" ||
+            (result.finalReason == "fingerprint_not_offer_like" && result.fingerprintKind != "OFFER_LIKE")
+        if (!eligibleFailure ||
+            result.finalReason == "ninety_nine_map_searching_state" ||
+            result.recentKmOneOverlayVisible
+        ) {
+            return
+        }
+        ninetyNineVisualProbeRetryScheduledByGroupId += sourceGroupId
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_99_VISUAL_PROBE_RETRY_SCHEDULED",
+            "reason" to "no_valid_crop_candidate_or_unknown",
+            "delayMs" to NINETY_NINE_VISUAL_PROBE_RETRY_DELAY_MS,
+            "sourceObservationId" to sourceGroupId
+        )
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = result.timestampMs,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "retry_scheduled",
+                reason = "no_valid_crop_candidate_or_unknown"
+            )
+        )
+        watchdogScheduler.schedule(NINETY_NINE_VISUAL_PROBE_RETRY_DELAY_MS) {
+            val retryRequest = buildNinetyNineVisualProbeRetryRequest(result)
+            if (retryRequest == null) {
+                return@schedule
+            }
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_VISUAL_PROBE_RETRY_STARTED",
+                "retryAttempt" to 1,
+                "preferredCropOrder" to NINETY_NINE_VISUAL_PROBE_RETRY_PREFERRED_CROP_ORDER.joinToString(",")
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = clock.nowMs(),
+                    triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                    stage = "retry_started",
+                    reason = "no_valid_crop_candidate_or_unknown"
+                )
+            )
+            scheduleCapture(retryRequest)
+        }
+    }
+
+    private fun buildNinetyNineVisualProbeRetryRequest(
+        result: AutoCapturePipelineResult
+    ): CaptureRequest? {
+        val sourceGroupId = result.sourceGroupId ?: return null
+        val nowMs = clock.nowMs()
+        val suppressionReason = when {
+            activeCapture != null -> "active_capture_in_progress"
+            pendingCaptureRequest?.priority == CapturePriority.HIGH || pendingCaptureRequest?.priority == CapturePriority.CRITICAL ->
+                "high_priority_pending_exists"
+            result.recentKmOneOverlayVisible -> "recent_kmone_overlay_visible"
+            else -> null
+        }
+        if (suppressionReason != null) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_VISUAL_PROBE_SUPPRESSED",
+                "reason" to suppressionReason
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                    stage = "recovery_suppressed",
+                    reason = suppressionReason
+                )
+            )
+            return null
+        }
+        return CaptureRequest(
+            id = UUID.randomUUID().toString(),
+            sourceEventAtMs = result.timestampMs,
+            signalEmittedAtMs = result.timestampMs,
+            createdAtMs = nowMs,
+            approvedAtMs = null,
+            triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+            platformHint = PlatformHint.NINETY_NINE,
+            priority = CapturePriority.NORMAL,
+            dominantPackage = result.dominantPackage,
+            floatingPackage = result.floatingPackage,
+            floatingBounds = result.floatingBounds,
+            floatingKind = result.floatingKind ?: FloatingWindowKind.FLOATING_BUBBLE,
+            reason = "ninety_nine_visual_probe_retry_after_unknown",
+            metadataNotes = mapOf(
+                "ninetyNineVisualProbePreferredCropOrder" to NINETY_NINE_VISUAL_PROBE_RETRY_PREFERRED_CROP_ORDER.joinToString(","),
+                "ninetyNineVisualProbeRetryAttempt" to "1",
+                "ninetyNineVisualProbeSourceGroupId" to sourceGroupId
+            ),
+            analysisEpoch = AnalysisEpochController.current()
+        )
     }
 
     private fun ignoredReason(signal: RadarSignal.UberFloatingOverOtherApp): String? {
@@ -1362,6 +1477,7 @@ class RadarCaptureOrchestrator(
         const val NINETY_NINE_COMPACT_DIAGNOSTIC_COOLDOWN_MS = 4000L
         const val NINETY_NINE_VISUAL_PROBE_COOLDOWN_MS = 2000L
         const val NINETY_NINE_VISUAL_PROBE_NON_OFFER_COOLDOWN_MS = 5000L
+        const val NINETY_NINE_VISUAL_PROBE_RETRY_DELAY_MS = 800L
         val PRE_OFFER_WATCHDOG_PREFERRED_CROP_ORDER = listOf(
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.FLOATING_BOUNDS_EXPANDED,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
@@ -1372,6 +1488,11 @@ class RadarCaptureOrchestrator(
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.CENTER_CARD_AREA,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_THIRD,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.FULL_DEBUG
+        )
+        val NINETY_NINE_VISUAL_PROBE_RETRY_PREFERRED_CROP_ORDER = listOf(
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.CENTER_CARD_AREA,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.FULL_DEBUG
         )
         val PRICE_TREE_REGEX = Regex("""(?:r\$|\$)\s*\d""", RegexOption.IGNORE_CASE)
