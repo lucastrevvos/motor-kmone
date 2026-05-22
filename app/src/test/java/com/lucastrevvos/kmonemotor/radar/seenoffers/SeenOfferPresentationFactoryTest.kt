@@ -82,11 +82,11 @@ class SeenOfferPresentationFactoryTest {
     fun manualReshow_usesSavedOfferDetailsInsteadOfPartialManualObservation() {
         val presentation = factory.buildFromSeenOffer(
             seenOffer = seenOffer(
-                price = 18.41,
-                valuePerKm = 1.06,
-                pickupDistanceKm = 5.6,
-                tripDistanceKm = 11.7,
-                totalDistanceKm = 17.3,
+                price = 7.20,
+                valuePerKm = 1.36,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = 3.7,
+                totalDistanceKm = 5.3,
                 originPreview = "Origem salva",
                 destinationPreview = "Destino salvo"
             ),
@@ -94,7 +94,11 @@ class SeenOfferPresentationFactoryTest {
         )
 
         assertEquals("Oferta ja registrada", presentation.title)
-        assertTrue(presentation.priceText?.contains("18,41") == true)
+        assertTrue(presentation.priceText?.contains("7,20") == true)
+        assertTrue(presentation.primaryMetric?.contains("1,36") == true)
+        assertTrue(presentation.secondaryMetric?.contains("5,3") == true)
+        assertTrue(presentation.details.any { it.contains("Busca: 7 min / 1,6 km") })
+        assertTrue(presentation.details.any { it.contains("Corrida: 17 min / 3,7 km") })
         assertTrue(presentation.details.any { it.contains("Origem: Origem salva") })
         assertTrue(presentation.details.any { it.contains("Destino: Destino salvo") })
     }

@@ -157,7 +157,7 @@ class SeenOfferMapperTest {
         assertEquals(0.858, seenOffer?.pickupDistanceKm ?: 0.0, 0.001)
         assertEquals(17.6, seenOffer?.tripDistanceKm ?: 0.0, 0.001)
         assertEquals(18.458, seenOffer?.totalDistanceKm ?: 0.0, 0.01)
-        assertEquals(21.4 / 18.458, seenOffer?.valuePerKm ?: 0.0, 0.02)
+        assertEquals(1.30, seenOffer?.valuePerKm ?: 0.0, 0.02)
     }
 
     @Test

@@ -136,6 +136,25 @@ class SeenOfferConsistencyAuditorTest {
         assertTrue(result.warnings.contains("suspicious_meter_distance_probably_time"))
     }
 
+    @Test
+    fun ninetyNine_singleDistance_preservesExplicitValuePerKmAndInfersTotal() {
+        val result = auditor.audit(
+            offer(
+                platform = RidePlatform.NINETY_NINE,
+                price = 9.30,
+                valuePerKm = 1.28,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = null,
+                totalDistanceKm = null
+            )
+        )
+
+        assertFalse(result.shouldReject)
+        assertEquals(7.27, result.normalizedOffer.totalDistanceKm ?: 0.0, 0.02)
+        assertEquals(1.28, result.normalizedOffer.valuePerKm ?: 0.0, 0.02)
+        assertTrue(result.warnings.contains("single_distance_total_inferred_from_explicit_value_per_km"))
+    }
+
     private fun offer(
         platform: RidePlatform = RidePlatform.UBER,
         price: Double? = 12.5,

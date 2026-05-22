@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import kotlin.math.abs
 
 data class ResolvedRideEconomics(
@@ -64,12 +65,42 @@ object RideEconomicsCalculator {
                 resolvedTrip = sortedTrip
             }
         }
+        val singleDistanceCandidate = when {
+            resolvedPickup != null && resolvedTrip == null -> resolvedPickup
+            resolvedPickup == null && resolvedTrip != null -> resolvedTrip
+            resolvedPickup != null &&
+                resolvedTrip != null &&
+                abs(resolvedPickup - resolvedTrip) <= 0.05 &&
+                inferredFromValuePerKm != null &&
+                inferredFromValuePerKm > (resolvedPickup + resolvedTrip + 0.5) -> resolvedPickup
+            else -> null
+        }
         var resolvedTotal = when (platform) {
             RidePlatform.NINETY_NINE -> {
                 if (hasSuspiciousTinyTrip) {
                     warnings += "suspicious_meter_distance_probably_time"
                 }
                 when {
+                    singleDistanceCandidate != null && inferredFromValuePerKm != null -> {
+                        if (resolvedPickup != null) {
+                            val inferredTripKm = (inferredFromValuePerKm - resolvedPickup).takeIf { it > 0.0 }
+                            if (resolvedTrip == null && inferredTripKm != null) {
+                                resolvedTrip = inferredTripKm
+                                warnings += "trip_distance_inferred_from_explicit_value_per_km"
+                            }
+                        }
+                        warnings += "single_distance_total_inferred_from_explicit_value_per_km"
+                        RadarLogger.i(
+                            "KM_V2_SEEN",
+                            "KM_V2_99_SINGLE_DISTANCE_TOTAL_INFERRED_FROM_VALUE_PER_KM",
+                            "price" to price,
+                            "explicitValuePerKm" to normalizedValuePerKm,
+                            "singleDistanceKm" to singleDistanceCandidate,
+                            "inferredTotalKm" to inferredFromValuePerKm,
+                            "inferredTripKm" to resolvedTrip
+                        )
+                        inferredFromValuePerKm
+                    }
                     hasSuspiciousTinyTrip && inferredFromValuePerKm != null -> {
                         warnings += "total_distance_inferred_from_value_per_km"
                         inferredFromValuePerKm
@@ -104,10 +135,10 @@ object RideEconomicsCalculator {
             )
         }
 
-        var resolvedValuePerKm = if (price != null && resolvedTotal != null && resolvedTotal > 0.0) {
-            price / resolvedTotal
-        } else {
-            normalizedValuePerKm
+        var resolvedValuePerKm = when {
+            platform == RidePlatform.NINETY_NINE && normalizedValuePerKm != null -> normalizedValuePerKm
+            price != null && resolvedTotal != null && resolvedTotal > 0.0 -> price / resolvedTotal
+            else -> normalizedValuePerKm
         }
 
         if (

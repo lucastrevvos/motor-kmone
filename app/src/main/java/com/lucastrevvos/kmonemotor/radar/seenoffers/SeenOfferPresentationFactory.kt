@@ -37,7 +37,7 @@ class SeenOfferPresentationFactory(
         RadarLogger.i(
             "KM_V2_SEEN",
             "KM_V2_SEEN_OFFER_RESHOW_SOURCE",
-            "source" to "saved_seen_offer",
+            "source" to "existing_seen_offer",
             "seenOfferId" to seenOffer.id,
             "hasPrice" to (seenOffer.price != null),
             "hasTotalDistance" to (resolved.totalDistanceKm != null),

@@ -71,6 +71,22 @@ class FileSeenOfferRepository(
                 )
                 return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved")
             }
+            if (mergePolicy.isPartialEconomicsDowngrade(existing = duplicate, candidate = offer)) {
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SAVED_OFFER_PARTIAL_ECONOMICS_DOWNGRADE_IGNORED",
+                    "existingSeenOfferId" to duplicate.id,
+                    "candidateObservationId" to offer.observationId,
+                    "existingTotalDistanceKm" to duplicate.totalDistanceKm,
+                    "candidateTotalDistanceKm" to offer.totalDistanceKm,
+                    "existingHasPickup" to (duplicate.pickupDistanceKm != null),
+                    "existingHasTrip" to (duplicate.tripDistanceKm != null),
+                    "candidateHasPickup" to (offer.pickupDistanceKm != null),
+                    "candidateHasTrip" to (offer.tripDistanceKm != null),
+                    "reason" to "existing_complete_candidate_partial"
+                )
+                return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved")
+            }
             if (newQuality > existingQuality) {
                 val merged = mergePolicy.mergeBetter(duplicate, offer)
                 offers.replaceAll { current -> if (current.id == duplicate.id) merged else current }

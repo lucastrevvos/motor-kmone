@@ -65,7 +65,7 @@ class SeenOfferConsistencyAuditor {
                 "KM_V2_SEEN",
                 "KM_V2_99_ECONOMICS_COMPARE",
                 "price" to adjusted.price,
-                "explicitValuePerKm" to offer.valuePerKm,
+                "explicitValuePerKmFromOcr" to offer.valuePerKm,
                 "pickupDistanceKm" to adjusted.pickupDistanceKm,
                 "tripDistanceKm" to adjusted.tripDistanceKm,
                 "resolvedTotalDistanceKm" to adjusted.totalDistanceKm,

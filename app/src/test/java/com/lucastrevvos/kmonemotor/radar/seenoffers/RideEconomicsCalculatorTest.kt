@@ -84,4 +84,37 @@ class RideEconomicsCalculatorTest {
         assertEquals(10.042, resolved.totalDistanceKm ?: 0.0, 0.02)
         assertEquals(1.80, resolved.valuePerKm ?: 0.0, 0.02)
     }
+
+    @Test
+    fun ninetyNine_singleDistanceWithExplicitValuePerKm_infersTotalWithoutDuplicatingDistance() {
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = RidePlatform.NINETY_NINE,
+            price = 9.30,
+            explicitValuePerKm = 1.28,
+            totalDistanceKm = null,
+            pickupDistanceKm = 1.6,
+            tripDistanceKm = null
+        )
+
+        assertEquals(7.27, resolved.totalDistanceKm ?: 0.0, 0.02)
+        assertEquals(1.28, resolved.valuePerKm ?: 0.0, 0.02)
+        assertEquals(1.6, resolved.pickupDistanceKm ?: 0.0, 0.0)
+        assertTrue(resolved.warnings.contains("single_distance_total_inferred_from_explicit_value_per_km"))
+    }
+
+    @Test
+    fun ninetyNine_partialSingleDistanceWithExplicitValuePerKm_keepsExplicitEconomics() {
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = RidePlatform.NINETY_NINE,
+            price = 7.20,
+            explicitValuePerKm = 1.36,
+            totalDistanceKm = null,
+            pickupDistanceKm = 1.6,
+            tripDistanceKm = null
+        )
+
+        assertEquals(5.29, resolved.totalDistanceKm ?: 0.0, 0.02)
+        assertEquals(1.36, resolved.valuePerKm ?: 0.0, 0.02)
+        assertTrue(resolved.warnings.contains("single_distance_total_inferred_from_explicit_value_per_km"))
+    }
 }

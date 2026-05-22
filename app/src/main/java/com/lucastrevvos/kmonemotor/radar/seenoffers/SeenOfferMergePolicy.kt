@@ -141,6 +141,27 @@ class SeenOfferMergePolicy(
         return false
     }
 
+    fun isPartialEconomicsDowngrade(existing: SeenOffer, candidate: SeenOffer): Boolean {
+        val platformResolution = resolvePlatformResolution(candidate = candidate, existing = existing) ?: return false
+        if (platformResolution.effectiveExistingPlatform != RidePlatform.NINETY_NINE ||
+            platformResolution.effectiveCandidatePlatform != RidePlatform.NINETY_NINE
+        ) {
+            return false
+        }
+        if (!similarMoney(candidate.price, existing.price)) return false
+        if (abs(candidate.createdAtMs - existing.createdAtMs) > duplicateWindowMs) return false
+        val existingComplete = existing.price != null &&
+            existing.valuePerKm != null &&
+            existing.pickupDistanceKm != null &&
+            existing.tripDistanceKm != null &&
+            existing.totalDistanceKm != null
+        val candidatePartial = candidate.price != null &&
+            candidate.valuePerKm != null &&
+            candidate.pickupDistanceKm != null &&
+            candidate.tripDistanceKm == null
+        return existingComplete && candidatePartial
+    }
+
     fun mergeBetter(existing: SeenOffer, candidate: SeenOffer): SeenOffer {
         fun chooseString(newValue: String?, oldValue: String?): String? {
             return when {

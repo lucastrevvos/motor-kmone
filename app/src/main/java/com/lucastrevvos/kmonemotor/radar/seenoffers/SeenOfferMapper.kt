@@ -85,7 +85,11 @@ class SeenOfferMapper(
             sourceTrigger = observation.triggerSource.name,
             status = SeenOfferStatus.SEEN,
             price = price,
-            valuePerKm = mappedEconomics.valuePerKm ?: fallbackValuePerKm,
+            valuePerKm = if (platform == RidePlatform.NINETY_NINE) {
+                fallbackValuePerKm ?: mappedEconomics.valuePerKm
+            } else {
+                mappedEconomics.valuePerKm ?: fallbackValuePerKm
+            },
             pickupDistanceKm = mappedEconomics.pickupDistanceKm,
             pickupTimeMin = pickupTime,
             tripDistanceKm = mappedEconomics.tripDistanceKm,

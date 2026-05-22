@@ -346,6 +346,50 @@ class SeenOfferRepositoriesTest {
     }
 
     @Test
+    fun recentManualPartialNinetyNineOffer_doesNotReplaceExistingCompleteEconomics() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "saved-99",
+                observationId = "obs-auto",
+                platform = RidePlatform.NINETY_NINE,
+                price = 7.20,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = 3.7,
+                totalDistanceKm = 5.3,
+                sourceTrigger = "NINETY_NINE_VISUAL_PROBE",
+                createdAtMs = 1_000L
+            ).copy(
+                valuePerKm = 1.36,
+                rawTextPreview = "R$7,20 Dinheiro Taxa de deslocamento R$1,90 R$1,36/km 6min (1,6km) 5min (3,7km)"
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "manual-99",
+                observationId = "obs-manual",
+                platform = RidePlatform.NINETY_NINE,
+                price = 7.20,
+                pickupDistanceKm = 1.6,
+                tripDistanceKm = null,
+                totalDistanceKm = 5.29,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 5_000L
+            ).copy(
+                valuePerKm = 1.36,
+                rawTextPreview = "Prioritario Dinheiro R$7,20 6min (1,6km) R$1,36/km"
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(1, repo.listSeenOffers().size)
+        assertEquals(5.3, repo.listSeenOffers().first().totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(3.7, repo.listSeenOffers().first().tripDistanceKm ?: 0.0, 0.01)
+    }
+
+    @Test
     fun recentManualEnviosCaptures_mergeAsSameUberOffer() {
         val repo = seenOfferRepository()
         repo.saveSeenOffer(
