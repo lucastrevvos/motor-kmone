@@ -333,4 +333,37 @@ class AutoMissDiagnosticsTest {
         assertEquals(11, diagnosis.last99SignalNodeCount)
         assertEquals(0, diagnosis.last99SignalVisibleTextNodeCount)
     }
+
+    @Test
+    fun manualNinetyNineSuccessAfterProbeNoValidCrop_reportsSpecificCause() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_000L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "capture_approved",
+                reason = "tree_structure_changed_without_text"
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_100L,
+                triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                stage = "vision_no_valid_crop_candidate",
+                reason = "no_valid_crop_candidate"
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-99-2",
+            manualPlatform = "NINETY_NINE",
+            manualPrice = 20.70,
+            manualDistances = "2.3km,20.4km",
+            manualTimes = "9min,35min",
+            manualSelectedCropKind = "CENTER_CARD_AREA",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("ninety_nine_probe_no_valid_crop_candidate", diagnosis.likelyCause)
+    }
 }

@@ -75,6 +75,7 @@ import com.lucastrevvos.kmonemotor.radar.vision.AutomaticVisionRecoveryPolicy
 import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionAction
 import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionGuard
 import com.lucastrevvos.kmonemotor.radar.vision.FloatingObstructionResult
+import com.lucastrevvos.kmonemotor.radar.vision.NinetyNineVisualProbeFallback
 import com.lucastrevvos.kmonemotor.radar.vision.SmartCropper
 import com.lucastrevvos.kmonemotor.radar.vision.VisualOfferProbe
 import com.lucastrevvos.kmonemotor.radar.vision.VisualOfferProbeResult
@@ -698,7 +699,34 @@ class KmRadarAccessibilityService : AccessibilityService() {
             obstructionResult = obstructionResult
         )
         val recoveryDecision = evaluateAutomaticVisionRecovery(observation, adjustedVisualResult, candidates)
-        val effectiveVisualResult = buildEffectiveVisualResult(adjustedVisualResult, recoveryDecision)
+        if (!observation.isManual &&
+            observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
+            adjustedVisualResult.reason == "no_valid_crop_candidate"
+        ) {
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = clock.nowMs(),
+                    triggerSource = observation.triggerSource,
+                    stage = "vision_no_valid_crop_candidate",
+                    reason = "no_valid_crop_candidate"
+                )
+            )
+        }
+        val recoveredVisualResult = buildEffectiveVisualResult(adjustedVisualResult, recoveryDecision)
+        val ninetyNineFallback = NinetyNineVisualProbeFallback.applyIfNeeded(
+            triggerSource = observation.triggerSource,
+            visualResult = recoveredVisualResult,
+            candidates = candidates
+        )
+        val effectiveVisualResult = ninetyNineFallback.visualResult
+        if (ninetyNineFallback.applied) {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_99_VISUAL_PROBE_FALLBACK_CROP_APPLIED",
+                "reason" to "no_valid_crop_candidate",
+                "fallbackCropKind" to ninetyNineFallback.fallbackCropKind
+            )
+        }
         updateAutomaticCaptureSource(
             observationId = observation.id,
             selectedCropKind = effectiveVisualResult.bestCandidate?.kind

@@ -185,6 +185,10 @@ class AutoMissDiagnostics(
         val last99ProbeSuppressed = recent.filter {
             it.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE && it.stage == "recovery_suppressed"
         }.maxByOrNull { it.timestampMs }
+        val last99NoValidCrop = recent.filter {
+            it.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
+                it.stage == "vision_no_valid_crop_candidate"
+        }.maxByOrNull { it.timestampMs }
         val lastOperationalRejection = recent.filter {
             (it.stage == "offer_card_signal_rejected" || it.stage == "trigger_rejected_pre_offer") &&
                 (it.isOperationalScreen == true || it.reason.isOperationalRejectReason())
@@ -212,6 +216,10 @@ class AutoMissDiagnostics(
             recent.isEmpty() -> "no_auto_attempt_before_manual"
             manualPlatform == "NINETY_NINE" &&
                 last99ProbeSuppressed?.reason == "floating_package_system_ui" -> "ninety_nine_probe_suppressed_by_system_ui"
+            manualPlatform == "NINETY_NINE" &&
+                last99NoValidCrop != null &&
+                recent.none { it.timestampMs > last99NoValidCrop.timestampMs && it.stage == "capture_approved" } ->
+                "ninety_nine_probe_no_valid_crop_candidate"
             manualPlatform == "NINETY_NINE" &&
                 recent99Signals.isNotEmpty() &&
                 recent.none { it.stage == "capture_approved" } -> "ninety_nine_signal_not_routed_to_capture"
