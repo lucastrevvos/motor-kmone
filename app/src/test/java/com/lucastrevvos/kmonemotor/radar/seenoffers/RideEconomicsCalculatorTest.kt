@@ -69,4 +69,19 @@ class RideEconomicsCalculatorTest {
         assertTrue(resolved.warnings.contains("suspicious_meter_distance_probably_time"))
         assertTrue(resolved.warnings.contains("total_distance_inferred_from_value_per_km"))
     }
+
+    @Test
+    fun ninetyNine_explicitValuePerKmMatchesPickupPlusTripWithinTolerance() {
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = RidePlatform.NINETY_NINE,
+            price = 18.10,
+            explicitValuePerKm = 1.80,
+            totalDistanceKm = null,
+            pickupDistanceKm = 0.842,
+            tripDistanceKm = 9.2
+        )
+
+        assertEquals(10.042, resolved.totalDistanceKm ?: 0.0, 0.02)
+        assertEquals(1.80, resolved.valuePerKm ?: 0.0, 0.02)
+    }
 }

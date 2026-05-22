@@ -168,14 +168,56 @@ class OfferParserHelpersTest {
         assertTrue(warnings.contains("trip_distance_estimated_from_value_per_km"))
     }
 
+    @Test
+    fun ninetyNineNegotiationChoosesFirstPrimaryPrice() {
+        val price = helpers.selectMainPrice(
+            input(
+                rawText = "Negocia Dinheiro R$18,37 R$1,23/km Aceitar por R$18,37 R$19,29 R$19,84 R$20,21",
+                prices = listOf(price(18.37), price(19.29), price(19.84), price(20.21)),
+                valuePerKm = listOf(valuePerKm(1.23)),
+                platformTextHint = PlatformTextHint.NINETY_NINE
+            )
+        )
+
+        assertEquals(18.37, price?.value ?: 0.0, 0.0)
+    }
+
+    @Test
+    fun ninetyNineRouteUsesExplicitValuePerKmToChooseKmPair() {
+        val warnings = mutableListOf<String>()
+        val route = helpers.selectRoute(
+            input(
+                rawText = "Pagamento no app R$12,60 R$1,39/km 20min (1,7km) 12min (7,3km)",
+                prices = listOf(price(12.60)),
+                valuePerKm = listOf(valuePerKm(1.39)),
+                distances = listOf(
+                    ExtractedNumericCandidate("20 m", 20.0, "m", "DISTANCE_M", 1),
+                    ExtractedNumericCandidate("1,7 km", 1.7, "km", "DISTANCE_KM", 2),
+                    ExtractedNumericCandidate("7,3 km", 7.3, "km", "DISTANCE_KM", 2)
+                ),
+                times = listOf(
+                    ExtractedNumericCandidate("20 min", 20.0, "min", "TIME_MINUTES", 2),
+                    ExtractedNumericCandidate("12 min", 12.0, "min", "TIME_MINUTES", 2)
+                ),
+                platformTextHint = PlatformTextHint.NINETY_NINE
+            ),
+            warnings
+        )
+
+        assertEquals(1.7, route.pickupDistanceKm?.value ?: 0.0, 0.01)
+        assertEquals(7.3, route.tripDistanceKm?.value ?: 0.0, 0.01)
+    }
+
     private fun input(
         rawText: String,
         prices: List<ExtractedNumericCandidate> = listOf(price(10.29)),
         valuePerKm: List<ExtractedNumericCandidate> = emptyList(),
+        distances: List<ExtractedNumericCandidate> = emptyList(),
+        times: List<ExtractedNumericCandidate> = emptyList(),
         platformTextHint: PlatformTextHint = PlatformTextHint.UNKNOWN
     ): OfferParserInput {
         return OfferParserInput(
-            fingerprint = fingerprint(rawText, prices, valuePerKm, platformTextHint),
+            fingerprint = fingerprint(rawText, prices, valuePerKm, distances, times, platformTextHint),
             ocrObservation = ocrObservation(rawText),
             clusterId = "cluster_1",
             dedupeDecision = OfferDedupeDecision.NEW_OFFER_CANDIDATE,
@@ -190,6 +232,8 @@ class OfferParserHelpersTest {
         rawText: String,
         prices: List<ExtractedNumericCandidate>,
         valuePerKm: List<ExtractedNumericCandidate>,
+        distances: List<ExtractedNumericCandidate>,
+        times: List<ExtractedNumericCandidate>,
         platformTextHint: PlatformTextHint
     ) = OfferTextFingerprint(
         fingerprintId = "fp",
@@ -206,8 +250,8 @@ class OfferParserHelpersTest {
         negativeSignals = emptyList(),
         priceCandidates = prices,
         valuePerKmCandidates = valuePerKm,
-        distanceCandidates = emptyList(),
-        timeCandidates = emptyList(),
+        distanceCandidates = distances,
+        timeCandidates = times,
         rawTextHash = "raw-hash",
         routeTextHash = null,
         normalizedPreview = rawText,

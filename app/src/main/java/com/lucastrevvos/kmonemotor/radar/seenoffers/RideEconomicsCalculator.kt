@@ -40,27 +40,50 @@ object RideEconomicsCalculator {
         }
 
         val warnings = routeWarnings.toMutableList()
+        var resolvedPickup = normalizedPickup
+        var resolvedTrip = normalizedTrip
+        val hasSuspiciousTinyTrip = (
+            platform == RidePlatform.NINETY_NINE &&
+                normalizedTrip != null &&
+                normalizedTrip < 0.2 &&
+                inferredFromValuePerKm != null &&
+                inferredFromValuePerKm >= 1.0
+            )
+        if (
+            platform == RidePlatform.NINETY_NINE &&
+            normalizedPickup != null &&
+            normalizedTrip != null &&
+            inferredFromValuePerKm != null
+        ) {
+            val sortedPickup = minOf(normalizedPickup, normalizedTrip)
+            val sortedTrip = maxOf(normalizedPickup, normalizedTrip)
+            val currentDelta = abs((normalizedPickup + normalizedTrip) - inferredFromValuePerKm)
+            val sortedDelta = abs((sortedPickup + sortedTrip) - inferredFromValuePerKm)
+            if (sortedDelta <= currentDelta) {
+                resolvedPickup = sortedPickup
+                resolvedTrip = sortedTrip
+            }
+        }
         var resolvedTotal = when (platform) {
             RidePlatform.NINETY_NINE -> {
-                if (
-                    normalizedTrip != null &&
-                    normalizedTrip < 0.2 &&
-                    inferredFromValuePerKm != null &&
-                    inferredFromValuePerKm >= 1.0
-                ) {
+                if (hasSuspiciousTinyTrip) {
                     warnings += "suspicious_meter_distance_probably_time"
                 }
                 when {
-                    pickupPlusTrip != null && (
+                    hasSuspiciousTinyTrip && inferredFromValuePerKm != null -> {
+                        warnings += "total_distance_inferred_from_value_per_km"
+                        inferredFromValuePerKm
+                    }
+                    resolvedPickup != null && resolvedTrip != null && (
                         normalizedTotal == null ||
-                            isDistanceDivergent(normalizedTotal, pickupPlusTrip)
+                            isDistanceDivergent(normalizedTotal, resolvedPickup + resolvedTrip)
                     ) -> {
                         if (normalizedTotal != null) {
                             warnings += "total_distance_mismatch_using_pickup_plus_trip"
                         }
-                        pickupPlusTrip
+                        resolvedPickup + resolvedTrip
                     }
-                    pickupPlusTrip != null -> pickupPlusTrip
+                    resolvedPickup != null && resolvedTrip != null -> resolvedPickup + resolvedTrip
                     inferredFromValuePerKm != null && (
                         normalizedTotal == null ||
                             normalizedTotal < inferredFromValuePerKm * 0.8
@@ -113,8 +136,8 @@ object RideEconomicsCalculator {
         }
 
         return ResolvedRideEconomics(
-            pickupDistanceKm = normalizedPickup,
-            tripDistanceKm = normalizedTrip,
+            pickupDistanceKm = resolvedPickup,
+            tripDistanceKm = resolvedTrip,
             totalDistanceKm = resolvedTotal,
             valuePerKm = resolvedValuePerKm,
             warnings = warnings.distinct()

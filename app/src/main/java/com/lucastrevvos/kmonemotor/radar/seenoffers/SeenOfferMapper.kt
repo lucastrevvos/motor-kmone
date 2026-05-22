@@ -21,11 +21,15 @@ class SeenOfferMapper(
         if (fingerprint.kind != OfferTextFingerprintKind.OFFER_LIKE) return null
         val draft = parserResult?.draft
         val platform = mapPlatform(draft?.platform, fingerprint.platformTextHint)
+        val price = draft?.price?.value ?: selectPrimaryPrice(platform, fingerprint)
+        val fallbackValuePerKm = draft?.valuePerKm?.value ?: selectMaxValue(fingerprint.valuePerKmCandidates)
         val distanceSelection = resolveDistancePair(
             platform = platform,
             fingerprint = fingerprint,
             draftPickupDistance = draft?.pickupDistanceKm?.value,
-            draftTripDistance = draft?.tripDistanceKm?.value
+            draftTripDistance = draft?.tripDistanceKm?.value,
+            price = price,
+            explicitValuePerKm = fallbackValuePerKm
         )
         val pickupDistance = distanceSelection.pickupDistanceKm
         val tripDistance = distanceSelection.tripDistanceKm
@@ -54,8 +58,6 @@ class SeenOfferMapper(
                 "reason" to routePreview.reason
             )
         }
-        val price = draft?.price?.value ?: selectMaxValue(fingerprint.priceCandidates)
-        val fallbackValuePerKm = draft?.valuePerKm?.value ?: selectMaxValue(fingerprint.valuePerKmCandidates)
         val mappedEconomics = RideEconomicsCalculator.resolveRideEconomics(
             platform = platform,
             price = price,
@@ -118,6 +120,16 @@ class SeenOfferMapper(
         return candidates.mapNotNull { it.normalizedValue }.maxOrNull()
     }
 
+    private fun selectPrimaryPrice(platform: RidePlatform, fingerprint: OfferTextFingerprint): Double? {
+        if (platform == RidePlatform.NINETY_NINE &&
+            (fingerprint.valuePerKmCandidates.isNotEmpty() || fingerprint.positiveSignals.any { it.key.contains("Dinheiro", ignoreCase = true) })
+        ) {
+            return fingerprint.priceCandidates.firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }?.normalizedValue
+                ?: fingerprint.priceCandidates.firstOrNull()?.normalizedValue
+        }
+        return selectMaxValue(fingerprint.priceCandidates)
+    }
+
     private fun distanceAt(candidates: List<ExtractedNumericCandidate>, index: Int): Double? {
         val candidate = candidates.getOrNull(index) ?: return null
         return distanceFromCandidate(candidate)
@@ -135,16 +147,55 @@ class SeenOfferMapper(
         platform: RidePlatform,
         fingerprint: OfferTextFingerprint,
         draftPickupDistance: Double?,
-        draftTripDistance: Double?
+        draftTripDistance: Double?,
+        price: Double?,
+        explicitValuePerKm: Double?
     ): DistanceSelection {
-        if (draftPickupDistance != null || draftTripDistance != null) {
-            return DistanceSelection(draftPickupDistance, draftTripDistance)
-        }
         if (platform == RidePlatform.NINETY_NINE) {
             val warnings = mutableListOf<String>()
             val normalizedCandidates = fingerprint.distanceCandidates.mapNotNull { candidate ->
                 distanceFromCandidate(candidate)?.takeIf { it > 0.0 }?.let { normalized ->
                     Triple(candidate, normalized, candidate.unit == "m")
+                }
+            }
+            val inferredTotal = if (price != null && explicitValuePerKm != null && explicitValuePerKm > 0.0) {
+                price / explicitValuePerKm
+            } else {
+                null
+            }
+            if (draftPickupDistance != null || draftTripDistance != null) {
+                if (
+                    draftPickupDistance != null &&
+                    draftTripDistance != null &&
+                    inferredTotal != null
+                ) {
+                    val draftTotal = draftPickupDistance + draftTripDistance
+                    if (kotlin.math.abs(draftTotal - inferredTotal) <= 0.35 || kotlin.math.abs(draftTotal - inferredTotal) / inferredTotal <= 0.12) {
+                        return DistanceSelection(draftPickupDistance, draftTripDistance)
+                    }
+                } else if (draftPickupDistance != null && draftTripDistance == null && inferredTotal != null) {
+                    val kmCandidates = normalizedCandidates
+                        .filter { (_, normalized, isMeter) -> !isMeter && normalized >= 0.3 }
+                        .map { it.second }
+                        .distinct()
+                        .sorted()
+                    val tripCandidate = kmCandidates.lastOrNull()
+                    if (tripCandidate != null && draftPickupDistance + tripCandidate <= inferredTotal + 0.35) {
+                        RadarLogger.i(
+                            "KM_V2_ROUTE",
+                            "KM_V2_99_ROUTE_SELECTION_BY_EXPLICIT_VALUE_PER_KM",
+                            "price" to price,
+                            "explicitValuePerKm" to explicitValuePerKm,
+                            "inferredTotalKm" to inferredTotal,
+                            "candidateDistances" to kmCandidates,
+                            "selectedPickupKm" to draftPickupDistance,
+                            "selectedTripKm" to tripCandidate,
+                            "selectedTotalKm" to (draftPickupDistance + tripCandidate),
+                            "delta" to kotlin.math.abs((draftPickupDistance + tripCandidate) - inferredTotal),
+                            "reason" to "draft_pickup_plus_largest_km_candidate"
+                        )
+                        return DistanceSelection(draftPickupDistance, tripCandidate)
+                    }
                 }
             }
             val plausibleTripKmCandidates = normalizedCandidates.filter { (_, normalized, isMeter) ->
@@ -179,10 +230,40 @@ class SeenOfferMapper(
                     return DistanceSelection(pickup, trip, warnings.distinct())
                 }
             }
+            if (inferredTotal != null) {
+                val kmCandidates = normalizedCandidates
+                    .filter { (_, normalized, isMeter) -> !isMeter && normalized >= 0.3 }
+                    .map { it.second }
+                    .distinct()
+                    .sorted()
+                if (kmCandidates.size >= 2) {
+                    val pickup = kmCandidates.first()
+                    val trip = kmCandidates.last()
+                    val total = pickup + trip
+                    val delta = kotlin.math.abs(total - inferredTotal)
+                    if (delta <= 0.35 || delta / inferredTotal <= 0.12) {
+                        RadarLogger.i(
+                            "KM_V2_ROUTE",
+                            "KM_V2_99_ROUTE_SELECTION_BY_EXPLICIT_VALUE_PER_KM",
+                            "price" to price,
+                            "explicitValuePerKm" to explicitValuePerKm,
+                            "inferredTotalKm" to inferredTotal,
+                            "candidateDistances" to kmCandidates,
+                            "selectedPickupKm" to pickup,
+                            "selectedTripKm" to trip,
+                            "selectedTotalKm" to total,
+                            "delta" to delta,
+                            "reason" to "sorted_km_candidates_closest_to_inferred_total"
+                        )
+                        return DistanceSelection(pickup, trip, warnings.distinct())
+                    }
+                }
+            }
             val kmCandidates = normalizedCandidates
                 .filter { (_, normalized, isMeter) -> !isMeter && normalized >= 0.3 }
             if (kmCandidates.size >= 2) {
-                return DistanceSelection(kmCandidates[0].second, kmCandidates[1].second, warnings.distinct())
+                val sorted = kmCandidates.map { it.second }.distinct().sorted()
+                return DistanceSelection(sorted.first(), sorted.last(), warnings.distinct())
             }
             return DistanceSelection(
                 pickupDistanceKm = distanceAt(fingerprint.distanceCandidates, 0),

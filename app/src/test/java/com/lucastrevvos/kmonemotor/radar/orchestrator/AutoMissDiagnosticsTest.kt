@@ -2,6 +2,7 @@ package com.lucastrevvos.kmonemotor.radar.orchestrator
 
 import com.lucastrevvos.kmonemotor.radar.core.TriggerSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AutoMissDiagnosticsTest {
@@ -36,6 +37,15 @@ class AutoMissDiagnosticsTest {
                 knownStateTexts = listOf("1-15 min", "1-11 min", "1-5 min")
             )
         )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 10_000L,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "watchdog_started",
+                reason = "map_eta_range_without_offer_evidence",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE
+            )
+        )
 
         val diagnosis = diagnostics.reportManualOracleSuccess(
             manualObservationId = "manual-2",
@@ -50,6 +60,9 @@ class AutoMissDiagnosticsTest {
 
         assertEquals("no_card_signal_after_pre_offer_state", diagnosis.likelyCause)
         assertEquals("FLOATING_BOUNDS_EXPANDED", diagnosis.manualSelectedCropKind)
+        assertEquals("map_eta_range_without_offer_evidence", diagnosis.lastPreOfferReason)
+        assertEquals(10_000L, diagnosis.lastPreOfferAgeMs)
+        assertTrue(diagnosis.watchdogStartedAfterPreOffer)
     }
 
     @Test
@@ -163,6 +176,92 @@ class AutoMissDiagnosticsTest {
     }
 
     @Test
+    fun manualSuccessAfterStaleOperationalRejection_reportsNoCardSignalAfterStaleOperationalState() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_000L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "operational_earnings_money_without_offer_evidence",
+                isOperationalScreen = true,
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE,
+                knownStateTexts = listOf("+R$ 6,25", "1-8min", "1-4min")
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-6-stale",
+            manualPlatform = "UBER",
+            manualPrice = 7.14,
+            manualDistances = "0.4km,4.0km",
+            manualTimes = "2min,9min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("no_card_signal_after_stale_operational_state", diagnosis.likelyCause)
+        assertEquals(9_000L, diagnosis.lastOperationalRejectionAgeMs)
+        assertEquals("operational_earnings_money_without_offer_evidence", diagnosis.staleOperationalReason)
+    }
+
+    @Test
+    fun manualSuccessAfterSearchingDisappearedEmptyTreeProbeCandidate_reportsNoCardSignalAfterPreOffer() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 10_500L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "searching_disappeared_empty_tree_probe_candidate",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE,
+                knownStateTexts = emptyList()
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-6b",
+            manualPlatform = "UBER",
+            manualPrice = 31.20,
+            manualDistances = "0.3km,27.3km",
+            manualTimes = "3min,29min",
+            manualSelectedCropKind = "FLOATING_BOUNDS_EXPANDED",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("no_card_signal_after_pre_offer_state", diagnosis.likelyCause)
+    }
+
+    @Test
+    fun manualSuccessAfterMapEtaPreOfferWithoutWatchdog_reportsWatchdogNotStarted() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_000L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "map_eta_range_without_offer_evidence",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE,
+                knownStateTexts = listOf("1-10 min", "1-8 min", "1-9 min", "1-6 min")
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-6c",
+            manualPlatform = "UBER",
+            manualPrice = 17.69,
+            manualDistances = "6.0km,9.2km",
+            manualTimes = "8min,18min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("watchdog_not_started_after_map_eta_pre_offer", diagnosis.likelyCause)
+        assertEquals("map_eta_range_without_offer_evidence", diagnosis.lastPreOfferReason)
+        assertTrue(!diagnosis.watchdogStartedAfterPreOffer)
+    }
+
+    @Test
     fun manualSuccessAfterCaptureApprovedAndUnknown_reportsCapturedButUnknown() {
         diagnostics.recordAutoTrace(
             AutoAttemptTrace(
@@ -193,5 +292,45 @@ class AutoMissDiagnosticsTest {
 
         assertEquals("captured_but_ocr_unknown", diagnosis.likelyCause)
         assertEquals("FLOATING_BOUNDS_EXPANDED", diagnosis.manualSelectedCropKind)
+    }
+
+    @Test
+    fun manualNinetyNineSuccessAfterRecentSignalsWithoutCapture_reportsSignalNotRouted() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_000L,
+                triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+                stage = "ninety_nine_signal_emitted",
+                reason = "tree_structure_changed",
+                nodeCount = 11,
+                visibleTextNodeCount = 0
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_100L,
+                triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+                stage = "offer_card_signal_rejected",
+                reason = "visible_text_node_count_zero",
+                nodeCount = 11,
+                visibleTextNodeCount = 0
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-99-1",
+            manualPlatform = "NINETY_NINE",
+            manualPrice = 31.37,
+            manualDistances = "2.3km,20.4km",
+            manualTimes = "9min,35min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("ninety_nine_signal_not_routed_to_capture", diagnosis.likelyCause)
+        assertTrue(diagnosis.recent99SignalCount > 0)
+        assertEquals(11, diagnosis.last99SignalNodeCount)
+        assertEquals(0, diagnosis.last99SignalVisibleTextNodeCount)
     }
 }

@@ -35,12 +35,26 @@ class PlatformInferenceEngine {
         val hasRouteSignal = ROUTE_SIGNAL_PATTERN.containsMatchIn(input.normalizedText)
         val hasVerifiedSignal = VERIFIED_SIGNAL_PATTERN.containsMatchIn(input.normalizedText)
         val hasRatingSignal = RATING_SIGNAL_PATTERN.containsMatchIn(input.normalizedText)
+        val fuzzyUberProductSignals = FUZZY_UBER_PRODUCT_SIGNALS.filter { it.regex.containsMatchIn(input.normalizedText) }.map { it.label }
+        val hasUberFuzzyStructure = fuzzyUberProductSignals.isNotEmpty() &&
+            hasUberOfferPrice &&
+            hasRouteSignal
         val hasUberEnviosStructure = enviosUberSignals.isNotEmpty() &&
             hasUberOfferPrice &&
             hasRouteSignal &&
             (hasVerifiedSignal || hasRatingSignal || enviosUberSignals.any { it.contains("Exclusivo") || it.contains("Envios") })
 
         val result = when {
+            !hasNinetyNineStrong && hasUberFuzzyStructure -> PlatformInferenceResult(
+                platform = PlatformTextHint.UBER,
+                confidence = 0.88,
+                reason = "uber_product_fuzzy_ocr_signal",
+                strongTextSignals = fuzzyUberProductSignals,
+                weakTextSignals = weakSignals,
+                contextSignals = contextSignals,
+                conflict = false
+            )
+
             hasUberStrong -> PlatformInferenceResult(
                 platform = PlatformTextHint.UBER,
                 confidence = 0.95,
@@ -145,7 +159,8 @@ class PlatformInferenceEngine {
             TriggerSource.UBER_STATE_TRANSITION -> PlatformTextHint.UBER to "trigger:uber"
 
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> PlatformTextHint.NINETY_NINE to "trigger:ninety_nine"
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> PlatformTextHint.NINETY_NINE to "trigger:ninety_nine"
 
             else -> null
         }
@@ -158,7 +173,7 @@ class PlatformInferenceEngine {
 
     private companion object {
         val STRONG_UBER_SIGNALS = listOf(
-            SignalPattern("UberX", Regex("\\buber\\s*x\\b|\\buberx\\b", RegexOption.IGNORE_CASE)),
+            SignalPattern("UberX", Regex("\\buberx\\b", RegexOption.IGNORE_CASE)),
             SignalPattern("UberX Exclusivo", Regex("\\buberx\\s+exclusivo\\b", RegexOption.IGNORE_CASE)),
             SignalPattern("Uber", Regex("\\buber\\b", RegexOption.IGNORE_CASE)),
             SignalPattern("Uber Product", Regex("\\buber\\s*(comfort|black|flash|moto)\\b", RegexOption.IGNORE_CASE))
@@ -169,6 +184,12 @@ class PlatformInferenceEngine {
             SignalPattern("Envios Carro Exclusivo", Regex("\\benvios\\s+carro\\s+exclusivo\\b", RegexOption.IGNORE_CASE)),
             SignalPattern("Carro Exclusivo", Regex("\\bcarro\\s+exclusivo\\b", RegexOption.IGNORE_CASE)),
             SignalPattern("Exclusivo", Regex("\\bexclusivo\\b", RegexOption.IGNORE_CASE))
+        )
+        val FUZZY_UBER_PRODUCT_SIGNALS = listOf(
+            SignalPattern("UberX fuzzy", Regex("\\buberx{2,}\\b", RegexOption.IGNORE_CASE)),
+            SignalPattern("Uber X fuzzy", Regex("\\buber\\s+x\\b", RegexOption.IGNORE_CASE)),
+            SignalPattern("UbereX fuzzy", Regex("\\buberex\\b", RegexOption.IGNORE_CASE)),
+            SignalPattern("UberXL", Regex("\\buberxl\\b", RegexOption.IGNORE_CASE))
         )
         val WEAK_UBER_SIGNALS = listOf(
             SignalPattern("Priority", Regex("\\bpriority\\b|\\bprioridade\\b", RegexOption.IGNORE_CASE)),

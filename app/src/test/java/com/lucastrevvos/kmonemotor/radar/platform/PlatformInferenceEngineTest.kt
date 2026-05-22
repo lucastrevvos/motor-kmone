@@ -109,6 +109,62 @@ class PlatformInferenceEngineTest {
     }
 
     @Test
+    fun uberxXFuzzyProductWithRoute_isUber() {
+        val result = engine.infer(
+            PlatformInferenceInput(
+                rawText = "UberxX R$ 7,14 2 min (0.4 km)",
+                normalizedText = "uberxx r$ 7,14 2 min (0.4 km)",
+                triggerSource = TriggerSource.MANUAL_SCREEN_ANALYSIS
+            )
+        )
+
+        assertEquals(PlatformTextHint.UBER, result.platform)
+        assertEquals("uber_product_fuzzy_ocr_signal", result.reason)
+    }
+
+    @Test
+    fun uberXXFuzzyProductWithRoute_isUber() {
+        val result = engine.infer(
+            PlatformInferenceInput(
+                rawText = "UberXX R$ 7,14 2 min (0.4 km)",
+                normalizedText = "uberxx r$ 7,14 2 min (0.4 km)",
+                triggerSource = TriggerSource.MANUAL_SCREEN_ANALYSIS
+            )
+        )
+
+        assertEquals(PlatformTextHint.UBER, result.platform)
+        assertEquals("uber_product_fuzzy_ocr_signal", result.reason)
+    }
+
+    @Test
+    fun uberXSeparatedWithRoute_isUber() {
+        val result = engine.infer(
+            PlatformInferenceInput(
+                rawText = "Uber X R$ 7,14 2 min (0.4 km)",
+                normalizedText = "uber x r$ 7,14 2 min (0.4 km)",
+                triggerSource = TriggerSource.MANUAL_SCREEN_ANALYSIS
+            )
+        )
+
+        assertEquals(PlatformTextHint.UBER, result.platform)
+        assertEquals("uber_product_fuzzy_ocr_signal", result.reason)
+    }
+
+    @Test
+    fun fuzzyUberProductWithStrong99Signals_prefersNinetyNine() {
+        val result = engine.infer(
+            PlatformInferenceInput(
+                rawText = "UberxX R$ 7,14 Pagamento no app R$1,22/km CPF e Cartão verif 2 min (0.4 km)",
+                normalizedText = "uberxx r$ 7,14 pagamento no app r$1,22/km cpf e cartao verif 2 min (0.4 km)",
+                triggerSource = TriggerSource.MANUAL_SCREEN_ANALYSIS
+            )
+        )
+
+        assertEquals(PlatformTextHint.NINETY_NINE, result.platform)
+        assertEquals("strong_99_text_signal", result.reason)
+    }
+
+    @Test
     fun unknownWithoutSignalsStaysUnknown() {
         val result = engine.infer(
             PlatformInferenceInput(

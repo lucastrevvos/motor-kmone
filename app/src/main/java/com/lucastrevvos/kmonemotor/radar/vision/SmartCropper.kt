@@ -68,7 +68,8 @@ class SmartCropper {
                 width,
                 minOf(height, (height * 0.88).roundToInt())
             )
-            TriggerSource.NINETY_NINE_TREE_STRUCTURE -> Rect(
+            TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> Rect(
                 0,
                 (height * 0.40).roundToInt(),
                 width,

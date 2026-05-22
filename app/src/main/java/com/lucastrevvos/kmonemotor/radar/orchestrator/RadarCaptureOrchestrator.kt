@@ -37,6 +37,7 @@ class RadarCaptureOrchestrator(
     private var pendingCaptureRequest: CaptureRequest? = null
     private val finishedCaptureIds = mutableSetOf<String>()
     private val uberFloatingDiagnosticCooldownBySignature = mutableMapOf<String, Long>()
+    private val ninetyNineVisualProbeCooldownBySignature = mutableMapOf<String, Long>()
     private var pendingUberOfferCardStabilization: UberOfferCardStabilization? = null
     private var pendingPreOfferWatchdog: PreOfferWatchdogSession? = null
     private val autoEvidenceAccumulator = RadarAutoCaptureEvidenceAccumulator()
@@ -96,9 +97,15 @@ class RadarCaptureOrchestrator(
 
     fun onAutoCapturePipelineFinished(result: AutoCapturePipelineResult) {
         if (result.triggerSource != TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC &&
-            result.triggerSource != TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG
+            result.triggerSource != TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG &&
+            result.triggerSource != TriggerSource.NINETY_NINE_VISUAL_PROBE
         ) {
             return
+        }
+        if (result.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
+            result.finalReason == "ninety_nine_map_searching_state"
+        ) {
+            ninetyNineVisualProbeCooldownBySignature["map_searching"] = result.timestampMs + NINETY_NINE_VISUAL_PROBE_NON_OFFER_COOLDOWN_MS
         }
         if (result.wasPersisted && result.fingerprintKind == "OFFER_LIKE") {
             cancelPreOfferVisualWatchdog("offer_captured")
@@ -526,6 +533,12 @@ class RadarCaptureOrchestrator(
         autoEvidenceAccumulator.add(evidence)
         autoStateMachine.addEvidence(evidence)
         logAutoEvidenceAdded(evidence)
+        val preOfferProbeCandidateReason = searchingDisappearedEmptyTreeProbeCandidateReason(
+            signal = signal,
+            matchedConditions = matchedConditions,
+            treeTextSignals = treeTextSignals,
+            treeScore = evidence.treeScore
+        )
         autoMissDiagnostics.recordAutoTrace(
             AutoAttemptTrace(
                 timestampMs = nowMs,
@@ -647,12 +660,72 @@ class RadarCaptureOrchestrator(
             )
         }
 
+        val forcedPreOfferReason = when {
+            preOfferProbeCandidateReason != null -> preOfferProbeCandidateReason
+            treeTextSignals.rejectionReason == "map_eta_range_without_offer_evidence" &&
+                !PreOfferVisualWatchdog.hasHardBlacklist(signal.knownStateTexts) &&
+                !treeTextSignals.hasSearchingText -> "map_eta_range_without_offer_evidence"
+            mapSearchingTreeSignal && !offerCardTreeSignal -> treeTextSignals.rejectionReason ?: "map_or_searching_signal"
+            else -> null
+        }
+        if (forcedPreOfferReason != null) {
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                    stage = "trigger_rejected_pre_offer",
+                    reason = forcedPreOfferReason,
+                    state = autoStateMachine.snapshot().state,
+                    treeScore = evidence.treeScore,
+                    hasOfferPriceText = treeTextSignals.hasOfferPriceText,
+                    hasOperationalMoneyText = treeTextSignals.hasOperationalMoneyText,
+                    hasUberProductText = treeTextSignals.hasUberProductText,
+                    hasRoutePairText = treeTextSignals.hasRoutePairText,
+                    hasSearchingText = treeTextSignals.hasSearchingText,
+                    isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+                    operationalReason = treeTextSignals.operationalScreen.reason,
+                    knownStateTexts = signal.knownStateTexts
+                )
+            )
+            applyAutoTransition(
+                autoStateMachine.transitionToPreOffer(
+                    forcedPreOfferReason,
+                    evidence
+                )
+            )
+            maybeStartPreOfferVisualWatchdog(
+                signal = signal,
+                matchedConditions = matchedConditions,
+                treeTextSignals = treeTextSignals,
+                rejectionReason = forcedPreOfferReason,
+                nowMs = nowMs,
+                epoch = epoch
+            )
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_TRIGGER_REJECTED_PRE_OFFER_MAP_STATE",
+                "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                "reason" to forcedPreOfferReason,
+                "currentState" to signal.currentState,
+                "knownStateTexts" to signal.knownStateTexts.joinToString(","),
+                "matchedConditions" to matchedConditions.joinToString(",")
+            )
+            RadarLogger.d(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_UBER_DOMINANT_DIAGNOSTIC_REJECTED",
+                "dominantPackage" to signal.dominantPackage,
+                "floatingPackage" to signal.floatingPackage,
+                "nodeTreePackage" to signal.nodeTreePackage,
+                "reason" to "pre_offer_map_state"
+            )
+            return null
+        }
+
         val rejectionReason = when {
             signal.dominantPackage != RadarConfig.UBER_DRIVER_PACKAGE -> "dominant_package_not_uber"
             signal.nodeTreePackage != null && signal.nodeTreePackage != RadarConfig.UBER_DRIVER_PACKAGE -> "node_tree_package_not_uber"
             signal.floatingPackage == SYSTEM_UI_PACKAGE && !systemUiIgnored -> "uber_dominant_weak_signal"
             signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING && !systemUiIgnored -> "uber_dominant_weak_signal"
-            mapSearchingTreeSignal && !offerCardTreeSignal -> "pre_offer_map_state"
             activeCapture != null -> "active_capture_exists"
             pendingCaptureRequest?.priority == CapturePriority.HIGH ||
                 pendingCaptureRequest?.priority == CapturePriority.CRITICAL -> "high_priority_pending_exists"
@@ -666,7 +739,7 @@ class RadarCaptureOrchestrator(
                 AutoAttemptTrace(
                     timestampMs = nowMs,
                     triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
-                    stage = if (rejectionReason == "pre_offer_map_state") "trigger_rejected_pre_offer" else "offer_card_signal_rejected",
+                    stage = "offer_card_signal_rejected",
                     reason = treeTextSignals.rejectionReason ?: rejectionReason,
                     state = autoStateMachine.snapshot().state,
                     treeScore = evidence.treeScore,
@@ -676,36 +749,10 @@ class RadarCaptureOrchestrator(
                     hasRoutePairText = treeTextSignals.hasRoutePairText,
                     hasSearchingText = treeTextSignals.hasSearchingText,
                     isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
-                    operationalReason = treeTextSignals.operationalScreen.reason
+                    operationalReason = treeTextSignals.operationalScreen.reason,
+                    knownStateTexts = signal.knownStateTexts
                 )
             )
-            if (rejectionReason == "pre_offer_map_state") {
-                applyAutoTransition(
-                    autoStateMachine.transitionToPreOffer(
-                        treeTextSignals.rejectionReason ?: "map_or_searching_signal",
-                        evidence
-                    )
-                )
-                maybeStartPreOfferVisualWatchdog(
-                    signal = signal,
-                    matchedConditions = matchedConditions,
-                    treeTextSignals = treeTextSignals,
-                    rejectionReason = treeTextSignals.rejectionReason,
-                    nowMs = nowMs,
-                    epoch = epoch
-                )
-            }
-            if (rejectionReason == "pre_offer_map_state") {
-                RadarLogger.i(
-                    "KM_V2_ORCHESTRATOR",
-                    "KM_V2_TRIGGER_REJECTED_PRE_OFFER_MAP_STATE",
-                    "triggerSource" to TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
-                    "reason" to (treeTextSignals.rejectionReason ?: rejectionReason),
-                    "currentState" to signal.currentState,
-                    "knownStateTexts" to signal.knownStateTexts.joinToString(","),
-                    "matchedConditions" to matchedConditions.joinToString(",")
-                )
-            }
             RadarLogger.d(
                 "KM_V2_ORCHESTRATOR",
                 "KM_V2_UBER_DOMINANT_DIAGNOSTIC_REJECTED",
@@ -886,18 +933,152 @@ class RadarCaptureOrchestrator(
         signal: RadarSignal.NinetyNineTreeStructureChanged,
         request: CaptureRequest
     ): SignalEvaluation {
+        val nowMs = request.createdAtMs
+        val classifier = NinetyNineNonOfferScreenClassifier.fromTexts(signal.signature.knownStateTexts)
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = nowMs,
+                triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+                stage = "ninety_nine_signal_emitted",
+                reason = "tree_structure_changed",
+                nodeCount = signal.signature.nodeCount,
+                visibleTextNodeCount = signal.signature.visibleTextNodeCount,
+                knownStateTexts = signal.signature.knownStateTexts
+            )
+        )
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_99_SIGNAL_RECEIVED_BY_ORCHESTRATOR",
+            "nodeCount" to signal.signature.nodeCount,
+            "visibleTextNodeCount" to signal.signature.visibleTextNodeCount,
+            "knownStateTexts" to signal.signature.knownStateTexts.joinToString(","),
+            "currentState" to "foreground_active_hint",
+            "floatingCoverage" to null
+        )
+        if (classifier.isNonOfferMapScreen) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_NON_OFFER_MAP_SCREEN_DETECTED",
+                "hasSearchingText" to classifier.hasSearchingText,
+                "hasMultiplierText" to classifier.hasMultiplierText,
+                "hasOfferPrice" to classifier.hasOfferPrice,
+                "hasValuePerKm" to classifier.hasValuePerKm,
+                "hasStrong99OfferSignals" to classifier.hasStrong99OfferSignals,
+                "reason" to classifier.reason
+            )
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_DECISION",
+                "accepted" to false,
+                "reason" to classifier.reason,
+                "nodeCount" to signal.signature.nodeCount,
+                "visibleTextNodeCount" to signal.signature.visibleTextNodeCount,
+                "knownStateTexts" to signal.signature.knownStateTexts.joinToString(","),
+                "hasOfferSurfaceSignal" to false,
+                "hasMapSearchingSignal" to classifier.hasSearchingText,
+                "isNonOfferMapScreen" to true
+            )
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_REJECTED",
+                "reason" to classifier.reason
+            )
+            return SignalEvaluation(request = request, ignoredReason = classifier.reason)
+        }
+        val hasOfferSurfaceSignal = classifier.hasOfferPrice || classifier.hasValuePerKm || classifier.hasStrong99OfferSignals
+        if (classifier.hasOperationalText && !hasOfferSurfaceSignal) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_DECISION",
+                "accepted" to false,
+                "reason" to "ninety_nine_operational_text_without_offer_surface",
+                "nodeCount" to signal.signature.nodeCount,
+                "visibleTextNodeCount" to signal.signature.visibleTextNodeCount,
+                "knownStateTexts" to signal.signature.knownStateTexts.joinToString(","),
+                "hasOfferSurfaceSignal" to false,
+                "hasMapSearchingSignal" to classifier.hasSearchingText,
+                "isNonOfferMapScreen" to false
+            )
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_REJECTED",
+                "reason" to "ninety_nine_operational_text_without_offer_surface",
+                "knownStateTexts" to signal.signature.knownStateTexts.joinToString(",")
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE,
+                    stage = "offer_card_signal_rejected",
+                    reason = "ninety_nine_operational_text_without_offer_surface",
+                    nodeCount = signal.signature.nodeCount,
+                    visibleTextNodeCount = signal.signature.visibleTextNodeCount,
+                    knownStateTexts = signal.signature.knownStateTexts
+                )
+            )
+            return SignalEvaluation(request = request, ignoredReason = "ninety_nine_operational_text_without_offer_surface")
+        }
         val qualification = qualifyNinetyNineSignal(signal)
-        return when {
+        val decision = when {
             qualification.rejectionReason == null -> SignalEvaluation(request = request, ignoredReason = null)
             qualification.rejectionReason == "node_count_below_20" -> {
                 val compactRequest = buildNinetyNineCompactDiagnosticRequest(signal, request.createdAtMs)
                 if (compactRequest != null) {
                     SignalEvaluation(request = compactRequest, ignoredReason = null)
                 } else {
-                    SignalEvaluation(request = request, ignoredReason = qualification.rejectionReason)
+                    buildNinetyNineVisualProbeDecision(signal, nowMs, qualification.rejectionReason, request)
                 }
             }
+            qualification.rejectionReason == "visible_text_node_count_zero" -> {
+                buildNinetyNineVisualProbeDecision(signal, nowMs, qualification.rejectionReason, request)
+            }
+            qualification.rejectionReason == null && !hasOfferSurfaceSignal -> {
+                buildNinetyNineVisualProbeDecision(signal, nowMs, "tree_structure_without_offer_surface", request)
+            }
             else -> SignalEvaluation(request = request, ignoredReason = qualification.rejectionReason)
+        }
+        val accepted = decision.ignoredReason == null && decision.request != null
+        val chosenReason = decision.request?.reason ?: decision.ignoredReason ?: qualification.rejectionReason
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_99_CAPTURE_DECISION",
+            "accepted" to accepted,
+            "reason" to chosenReason,
+            "nodeCount" to signal.signature.nodeCount,
+            "visibleTextNodeCount" to signal.signature.visibleTextNodeCount,
+            "knownStateTexts" to signal.signature.knownStateTexts.joinToString(","),
+            "hasOfferSurfaceSignal" to (signal.signature.visibleTextNodeCount > 0),
+            "hasMapSearchingSignal" to classifier.hasSearchingText,
+            "isNonOfferMapScreen" to classifier.isNonOfferMapScreen
+        )
+        if (accepted) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_APPROVED_FROM_TREE",
+                "triggerSource" to decision.request?.triggerSource,
+                "reason" to chosenReason
+            )
+        } else {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_CAPTURE_REJECTED",
+                "reason" to chosenReason
+            )
+        }
+        return decision
+    }
+
+    private fun buildNinetyNineVisualProbeDecision(
+        signal: RadarSignal.NinetyNineTreeStructureChanged,
+        nowMs: Long,
+        rejectionReason: String,
+        fallbackRequest: CaptureRequest
+    ): SignalEvaluation {
+        val probeRequest = buildNinetyNineVisualProbeRequest(signal, nowMs)
+        return if (probeRequest != null) {
+            SignalEvaluation(request = probeRequest, ignoredReason = null)
+        } else {
+            SignalEvaluation(request = fallbackRequest, ignoredReason = rejectionReason)
         }
     }
 
@@ -1047,6 +1228,84 @@ class RadarCaptureOrchestrator(
         return request
     }
 
+    private fun buildNinetyNineVisualProbeRequest(
+        signal: RadarSignal.NinetyNineTreeStructureChanged,
+        nowMs: Long
+    ): CaptureRequest? {
+        val epoch = AnalysisEpochController.current()
+        val signature = buildNinetyNineVisualProbeSignature(signal)
+        val nonOfferCooldownUntil = ninetyNineVisualProbeCooldownBySignature["map_searching"]
+        val suppressionReason = when {
+            signal.dominantPackage != RadarConfig.NINETY_NINE_DRIVER_PACKAGE -> "dominant_package_not_app99"
+            activeCapture != null -> "active_capture_in_progress"
+            pendingCaptureRequest?.priority == CapturePriority.HIGH || pendingCaptureRequest?.priority == CapturePriority.CRITICAL ->
+                "high_priority_pending_exists"
+            nonOfferCooldownUntil != null && nowMs < nonOfferCooldownUntil -> "non_offer_map_cooldown"
+            ninetyNineVisualProbeCooldownBySignature[signature]?.let { nowMs - it < NINETY_NINE_VISUAL_PROBE_COOLDOWN_MS } == true ->
+                "same_signature_cooldown"
+            else -> null
+        }
+        if (suppressionReason != null) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_VISUAL_PROBE_SUPPRESSED",
+                "reason" to suppressionReason
+            )
+            autoMissDiagnostics.recordAutoTrace(
+                AutoAttemptTrace(
+                    timestampMs = nowMs,
+                    triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+                    stage = "recovery_suppressed",
+                    reason = suppressionReason,
+                    nodeCount = signal.signature.nodeCount,
+                    visibleTextNodeCount = signal.signature.visibleTextNodeCount,
+                    knownStateTexts = signal.signature.knownStateTexts
+                )
+            )
+            return null
+        }
+        if (signal.floatingPackage == SYSTEM_UI_PACKAGE || signal.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING) {
+            RadarLogger.i(
+                "KM_V2_ORCHESTRATOR",
+                "KM_V2_99_VISUAL_PROBE_SYSTEM_UI_ALLOWED",
+                "floatingCoverage" to null,
+                "reason" to "dominant_99_low_system_ui_coverage"
+            )
+        }
+
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_99_VISUAL_PROBE_CROP_ORDER",
+            "preferredCropOrder" to NINETY_NINE_VISUAL_PROBE_PREFERRED_CROP_ORDER.joinToString(",")
+        )
+        val request = CaptureRequest(
+            id = UUID.randomUUID().toString(),
+            sourceEventAtMs = signal.eventReceivedAtMs,
+            signalEmittedAtMs = signal.signalEmittedAtMs,
+            createdAtMs = nowMs,
+            approvedAtMs = null,
+            triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+            platformHint = PlatformHint.NINETY_NINE,
+            priority = CapturePriority.NORMAL,
+            dominantPackage = signal.dominantPackage,
+            floatingPackage = signal.floatingPackage,
+            floatingBounds = signal.floatingBounds,
+            floatingKind = signal.floatingKind,
+            reason = "tree_structure_changed_without_text",
+            metadataNotes = mapOf(
+                "ninetyNineVisualProbePreferredCropOrder" to NINETY_NINE_VISUAL_PROBE_PREFERRED_CROP_ORDER.joinToString(",")
+            ),
+            analysisEpoch = epoch
+        )
+        ninetyNineVisualProbeCooldownBySignature[signature] = nowMs
+        RadarLogger.i(
+            "KM_V2_ORCHESTRATOR",
+            "KM_V2_99_VISUAL_PROBE_REQUESTED",
+            "reason" to "tree_structure_changed_without_text"
+        )
+        return request
+    }
+
     private fun ignoredReason(signal: RadarSignal.UberFloatingOverOtherApp): String? {
         return when (signal.floatingKind) {
             FloatingWindowKind.FLOATING_BUBBLE -> "floating_bubble_not_offer_candidate"
@@ -1101,11 +1360,19 @@ class RadarCaptureOrchestrator(
         const val UBER_DOMINANT_DIAGNOSTIC_COOLDOWN_MS = 4000L
         const val UBER_OFFER_CARD_STABILIZATION_DELAY_MS = 300L
         const val NINETY_NINE_COMPACT_DIAGNOSTIC_COOLDOWN_MS = 4000L
+        const val NINETY_NINE_VISUAL_PROBE_COOLDOWN_MS = 2000L
+        const val NINETY_NINE_VISUAL_PROBE_NON_OFFER_COOLDOWN_MS = 5000L
         val PRE_OFFER_WATCHDOG_PREFERRED_CROP_ORDER = listOf(
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.FLOATING_BOUNDS_EXPANDED,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_THIRD,
             com.lucastrevvos.kmonemotor.radar.vision.CropKind.CENTER_CARD_AREA
+        )
+        val NINETY_NINE_VISUAL_PROBE_PREFERRED_CROP_ORDER = listOf(
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_HALF,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.CENTER_CARD_AREA,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.LOWER_THIRD,
+            com.lucastrevvos.kmonemotor.radar.vision.CropKind.FULL_DEBUG
         )
         val PRICE_TREE_REGEX = Regex("""(?:r\$|\$)\s*\d""", RegexOption.IGNORE_CASE)
         val PLUS_MONEY_TREE_REGEX = Regex("""\+\s*r\$\s*\d""", RegexOption.IGNORE_CASE)
@@ -1119,6 +1386,18 @@ class RadarCaptureOrchestrator(
             signal.floatingPackage,
             signal.floatingBounds,
             roundedCoverage(signal.floatingCoverage)
+        ).joinToString("|")
+    }
+
+    private fun buildNinetyNineVisualProbeSignature(signal: RadarSignal.NinetyNineTreeStructureChanged): String {
+        val signature = signal.signature
+        return listOf(
+            signal.dominantPackage,
+            signature.packageName,
+            signature.nodeCount,
+            signature.visibleTextNodeCount,
+            signature.bottomHalfTextNodeCount,
+            signal.floatingPackage
         ).joinToString("|")
     }
 
@@ -1577,6 +1856,13 @@ class RadarCaptureOrchestrator(
             isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen
         )
         if (!plan.shouldStart) {
+            if (rejectionReason == "map_eta_range_without_offer_evidence") {
+                RadarLogger.i(
+                    "KM_V2_ORCHESTRATOR",
+                    "KM_V2_PRE_OFFER_WATCHDOG_EXPECTED_BUT_NOT_STARTED",
+                    "reason" to rejectionReason
+                )
+            }
             return
         }
         cancelPreOfferVisualWatchdog("restarted")
@@ -1600,6 +1886,15 @@ class RadarCaptureOrchestrator(
             "KM_V2_PRE_OFFER_WATCHDOG_STARTED",
             "reason" to pendingPreOfferWatchdog?.reason,
             "delaysMs" to plan.delaysMs.joinToString(",")
+        )
+        autoMissDiagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = nowMs,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "watchdog_started",
+                reason = pendingPreOfferWatchdog?.reason,
+                state = autoStateMachine.snapshot().state
+            )
         )
     }
 
@@ -1778,6 +2073,34 @@ class RadarCaptureOrchestrator(
                     it.contains("buscando corridas") ||
                     it.contains("buscando")
             }
+    }
+
+    private fun searchingDisappearedEmptyTreeProbeCandidateReason(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals,
+        treeScore: Int
+    ): String? {
+        val normalizedKnownStateTexts = signal.knownStateTexts
+            .map { it.trim().lowercase() }
+            .filter { it.isNotBlank() }
+        val hasWeakKnownStateTexts = normalizedKnownStateTexts.isEmpty() ||
+            (normalizedKnownStateTexts.size == 1 && normalizedKnownStateTexts.single().length <= 3)
+        val hasRequiredMatchedConditions = matchedConditions.contains("searching_text_disappeared") &&
+            matchedConditions.contains("tree_delta_threshold")
+        if (!hasRequiredMatchedConditions) {
+            return null
+        }
+        if (!hasWeakKnownStateTexts || treeScore > 1) {
+            return null
+        }
+        if (treeTextSignals.hasOfferPriceText || treeTextSignals.hasUberProductText || treeTextSignals.hasRoutePairText) {
+            return null
+        }
+        if (treeTextSignals.operationalScreen.isOperationalScreen || PreOfferVisualWatchdog.hasHardBlacklist(signal.knownStateTexts)) {
+            return null
+        }
+        return "searching_disappeared_empty_tree_probe_candidate"
     }
 
     private fun hasOfferCardTreeSignal(

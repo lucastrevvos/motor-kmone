@@ -211,8 +211,11 @@ class VisualOfferProbe(
                 }
                 .firstOrNull()
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> ranked.firstOrNull {
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> ranked.firstOrNull {
                 it.kind == CropKind.LOWER_HALF && it.valid && it.probe.offerLikeScore >= 5
+            } ?: ranked.firstOrNull {
+                it.kind == CropKind.CENTER_CARD_AREA && it.valid && it.probe.offerLikeScore >= 5
             } ?: ranked.firstOrNull {
                 it.kind == CropKind.LOWER_THIRD && it.valid && it.probe.offerLikeScore >= 5
             }
@@ -272,7 +275,8 @@ class VisualOfferProbe(
             TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC -> "uber_dominant_priority"
             TriggerSource.UBER_AUTO_BURST_RECOVERY -> "uber_auto_burst_priority"
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> "ninety_nine_priority"
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> "ninety_nine_priority"
             else -> "default_priority"
         }
         val selectedByRule = when {
@@ -322,7 +326,8 @@ class VisualOfferProbe(
         val priority = cropPriority(observation, candidate.kind)
         val largeEnough = candidate.width >= 40 && candidate.height >= 40
         val isNinetyNineTrigger = observation.triggerSource == TriggerSource.NINETY_NINE_TREE_STRUCTURE ||
-            observation.triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC
+            observation.triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC ||
+            observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE
         val blockedBySystemUiRule = isNinetyNineTrigger &&
             observation.floatingKind == FloatingWindowKind.SYSTEM_UI_FLOATING &&
             candidate.kind == CropKind.FLOATING_BOUNDS_EXPANDED
@@ -375,11 +380,13 @@ class VisualOfferProbe(
                 CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> buildList {
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> buildList {
                 add(CropKind.LOWER_HALF)
-                add(CropKind.LOWER_THIRD)
-                add(CropKind.PLATFORM_SPECIFIC_CANDIDATE)
                 add(CropKind.CENTER_CARD_AREA)
+                add(CropKind.LOWER_THIRD)
+                add(CropKind.FULL_DEBUG)
+                add(CropKind.PLATFORM_SPECIFIC_CANDIDATE)
                 if (observation.floatingKind != FloatingWindowKind.SYSTEM_UI_FLOATING) {
                     add(CropKind.FLOATING_BOUNDS_EXPANDED)
                 }
@@ -408,7 +415,8 @@ class VisualOfferProbe(
             score += 2
         }
         if ((triggerSource == TriggerSource.NINETY_NINE_TREE_STRUCTURE ||
-                triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC) &&
+                triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC ||
+                triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE) &&
             cropKind == CropKind.LOWER_HALF
         ) {
             score += 2
@@ -419,6 +427,7 @@ class VisualOfferProbe(
     private fun preferredCropOrder(observation: ScreenObservation): List<CropKind> {
         val raw = observation.metadata.notes["autoBurstPreferredCropOrder"]
             ?: observation.metadata.notes["preOfferWatchdogPreferredCropOrder"]
+            ?: observation.metadata.notes["ninetyNineVisualProbePreferredCropOrder"]
             ?: return emptyList()
         return raw.split(",")
             .mapNotNull { token -> runCatching { CropKind.valueOf(token.trim()) }.getOrNull() }

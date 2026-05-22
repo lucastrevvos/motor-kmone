@@ -10,6 +10,8 @@ data class AutoAttemptTrace(
     val stage: String,
     val reason: String? = null,
     val state: RadarAutoCaptureState? = null,
+    val nodeCount: Int? = null,
+    val visibleTextNodeCount: Int? = null,
     val treeScore: Int? = null,
     val hasOfferPriceText: Boolean? = null,
     val hasOperationalMoneyText: Boolean? = null,
@@ -40,10 +42,21 @@ data class AutoMissDiagnosis(
     val timeSinceLastAutoTraceMs: Long?,
     val timeSinceLastRejectedPreOfferMs: Long?,
     val timeSinceLastCaptureApprovedMs: Long?,
+    val lastOperationalRejectionAgeMs: Long?,
+    val staleOperationalReason: String?,
+    val lastPreOfferReason: String?,
+    val lastPreOfferAgeMs: Long?,
+    val watchdogStartedAfterPreOffer: Boolean,
+    val lastWatchdogStartAgeMs: Long?,
     val manualSelectedCropKind: String?,
     val manualTriggerSource: String?,
     val lastRejectedReason: String?,
     val lastRejectedKnownStateTexts: String?,
+    val recent99SignalCount: Int,
+    val last99SignalAgeMs: Long?,
+    val last99SignalNodeCount: Int?,
+    val last99SignalVisibleTextNodeCount: Int?,
+    val last99ProbeSuppressedReason: String?,
     val likelyCause: String
 )
 
@@ -68,6 +81,8 @@ class AutoMissDiagnostics(
             "triggerSource" to trace.triggerSource,
             "state" to trace.state,
             "reason" to trace.reason,
+            "nodeCount" to trace.nodeCount,
+            "visibleTextNodeCount" to trace.visibleTextNodeCount,
             "treeScore" to trace.treeScore,
             "hasOfferPriceText" to trace.hasOfferPriceText,
             "hasOperationalMoneyText" to trace.hasOperationalMoneyText,
@@ -128,8 +143,19 @@ class AutoMissDiagnostics(
             "timeSinceLastAutoTraceMs" to diagnosis.timeSinceLastAutoTraceMs,
             "timeSinceLastRejectedPreOfferMs" to diagnosis.timeSinceLastRejectedPreOfferMs,
             "timeSinceLastCaptureApprovedMs" to diagnosis.timeSinceLastCaptureApprovedMs,
+            "lastOperationalRejectionAgeMs" to diagnosis.lastOperationalRejectionAgeMs,
+            "staleOperationalReason" to diagnosis.staleOperationalReason,
+            "lastPreOfferReason" to diagnosis.lastPreOfferReason,
+            "lastPreOfferAgeMs" to diagnosis.lastPreOfferAgeMs,
+            "watchdogStartedAfterPreOffer" to diagnosis.watchdogStartedAfterPreOffer,
+            "lastWatchdogStartAgeMs" to diagnosis.lastWatchdogStartAgeMs,
             "lastRejectedReason" to diagnosis.lastRejectedReason,
             "lastRejectedKnownStateTexts" to diagnosis.lastRejectedKnownStateTexts,
+            "recent99SignalCount" to diagnosis.recent99SignalCount,
+            "last99SignalAgeMs" to diagnosis.last99SignalAgeMs,
+            "last99SignalNodeCount" to diagnosis.last99SignalNodeCount,
+            "last99SignalVisibleTextNodeCount" to diagnosis.last99SignalVisibleTextNodeCount,
+            "last99ProbeSuppressedReason" to diagnosis.last99ProbeSuppressedReason,
             "likelyCause" to diagnosis.likelyCause
         )
         return diagnosis
@@ -148,6 +174,21 @@ class AutoMissDiagnostics(
         val last = recent.maxByOrNull { it.timestampMs }
         val lastRejectedPreOffer = recent.filter { it.stage == "trigger_rejected_pre_offer" }.maxByOrNull { it.timestampMs }
         val lastCaptureApproved = recent.filter { it.stage == "capture_approved" }.maxByOrNull { it.timestampMs }
+        val lastWatchdogStarted = recent.filter { it.stage == "watchdog_started" }.maxByOrNull { it.timestampMs }
+        val recent99Signals = recent.filter {
+            it.stage == "ninety_nine_signal_emitted" ||
+                it.triggerSource == TriggerSource.NINETY_NINE_TREE_STRUCTURE ||
+                it.triggerSource == TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC ||
+                it.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE
+        }
+        val last99Signal = recent99Signals.maxByOrNull { it.timestampMs }
+        val last99ProbeSuppressed = recent.filter {
+            it.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE && it.stage == "recovery_suppressed"
+        }.maxByOrNull { it.timestampMs }
+        val lastOperationalRejection = recent.filter {
+            (it.stage == "offer_card_signal_rejected" || it.stage == "trigger_rejected_pre_offer") &&
+                (it.isOperationalScreen == true || it.reason.isOperationalRejectReason())
+        }.maxByOrNull { it.timestampMs }
         val lastFailure = recent.filter {
             it.stage in setOf(
                 "trigger_rejected_pre_offer",
@@ -162,8 +203,31 @@ class AutoMissDiagnostics(
         val timeSinceLastAutoTraceMs = last?.let { timestampMs - it.timestampMs }
         val timeSinceLastRejectedPreOfferMs = lastRejectedPreOffer?.let { timestampMs - it.timestampMs }
         val timeSinceLastCaptureApprovedMs = lastCaptureApproved?.let { timestampMs - it.timestampMs }
+        val lastOperationalRejectionAgeMs = lastOperationalRejection?.let { timestampMs - it.timestampMs }
+        val lastPreOfferAgeMs = lastRejectedPreOffer?.let { timestampMs - it.timestampMs }
+        val watchdogStartedAfterPreOffer = lastRejectedPreOffer != null &&
+            recent.any { it.stage == "watchdog_started" && it.timestampMs >= lastRejectedPreOffer.timestampMs }
+        val lastWatchdogStartAgeMs = lastWatchdogStarted?.let { timestampMs - it.timestampMs }
         val likelyCause = when {
             recent.isEmpty() -> "no_auto_attempt_before_manual"
+            manualPlatform == "NINETY_NINE" &&
+                last99ProbeSuppressed?.reason == "floating_package_system_ui" -> "ninety_nine_probe_suppressed_by_system_ui"
+            manualPlatform == "NINETY_NINE" &&
+                recent99Signals.isNotEmpty() &&
+                recent.none { it.stage == "capture_approved" } -> "ninety_nine_signal_not_routed_to_capture"
+            lastRejectedPreOffer != null &&
+                lastRejectedPreOffer.reason == "map_eta_range_without_offer_evidence" &&
+                lastPreOfferAgeMs != null &&
+                lastPreOfferAgeMs > 3_000L &&
+                !watchdogStartedAfterPreOffer &&
+                recent.none { it.timestampMs > lastRejectedPreOffer.timestampMs && it.stage in setOf("stabilization_started", "capture_approved") } ->
+                "watchdog_not_started_after_map_eta_pre_offer"
+            lastOperationalRejection != null &&
+                lastOperationalRejection.reason == "operational_earnings_money_without_offer_evidence" &&
+                lastOperationalRejectionAgeMs != null &&
+                lastOperationalRejectionAgeMs > 3_000L &&
+                recent.none { it.timestampMs > lastOperationalRejection.timestampMs && it.stage in setOf("stabilization_started", "capture_approved") } ->
+                "no_card_signal_after_stale_operational_state"
             timeSinceLastAutoTraceMs != null &&
                 timeSinceLastAutoTraceMs > 3_000L &&
                 last?.state == RadarAutoCaptureState.PRE_OFFER_MAP_STATE &&
@@ -182,7 +246,8 @@ class AutoMissDiagnostics(
             recent.any { it.stage == "stabilization_cancelled" } -> "stabilization_cancelled"
             recent.any {
                 (it.stage == "offer_card_signal_rejected" || it.stage == "trigger_rejected_pre_offer") &&
-                    (it.isOperationalScreen == true || it.reason.isOperationalRejectReason())
+                    (it.isOperationalScreen == true || it.reason.isOperationalRejectReason()) &&
+                    (timestampMs - it.timestampMs) <= 3_000L
             } -> "rejected_as_operational_screen"
             recent.any {
                 (it.stage == "fingerprint_result" && (it.fingerprintKind == "UNKNOWN" || it.fingerprintKind == "NON_OFFER")) ||
@@ -209,10 +274,21 @@ class AutoMissDiagnostics(
             timeSinceLastAutoTraceMs = timeSinceLastAutoTraceMs,
             timeSinceLastRejectedPreOfferMs = timeSinceLastRejectedPreOfferMs,
             timeSinceLastCaptureApprovedMs = timeSinceLastCaptureApprovedMs,
+            lastOperationalRejectionAgeMs = lastOperationalRejectionAgeMs,
+            staleOperationalReason = lastOperationalRejection?.reason,
+            lastPreOfferReason = lastRejectedPreOffer?.reason,
+            lastPreOfferAgeMs = lastPreOfferAgeMs,
+            watchdogStartedAfterPreOffer = watchdogStartedAfterPreOffer,
+            lastWatchdogStartAgeMs = lastWatchdogStartAgeMs,
             manualSelectedCropKind = manualSelectedCropKind,
             manualTriggerSource = manualTriggerSource,
             lastRejectedReason = lastRejectedPreOffer?.reason,
             lastRejectedKnownStateTexts = lastRejectedPreOffer?.knownStateTexts?.joinToString(","),
+            recent99SignalCount = recent99Signals.size,
+            last99SignalAgeMs = last99Signal?.let { timestampMs - it.timestampMs },
+            last99SignalNodeCount = last99Signal?.nodeCount,
+            last99SignalVisibleTextNodeCount = last99Signal?.visibleTextNodeCount,
+            last99ProbeSuppressedReason = last99ProbeSuppressed?.reason,
             likelyCause = likelyCause
         )
     }
@@ -226,6 +302,9 @@ class AutoMissDiagnostics(
 
     private fun String?.isOperationalRejectReason(): Boolean {
         val normalized = this?.trim()?.lowercase() ?: return false
+        if (normalized == "searching_disappeared_empty_tree_probe_candidate") {
+            return false
+        }
         return normalized == "operational_earnings_money_without_offer_evidence" ||
             normalized == "searching_text_without_price_product_or_route" ||
             normalized == "map_eta_range_without_offer_evidence" ||

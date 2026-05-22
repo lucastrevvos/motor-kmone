@@ -345,7 +345,8 @@ class OfferFingerprintDedupeEngine(
             TriggerSource.UBER_STATE_TRANSITION -> "uber"
 
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> "ninety_nine"
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> "ninety_nine"
 
             TriggerSource.MANUAL_SCREEN_ANALYSIS,
             TriggerSource.MANUAL_DEBUG -> "manual"

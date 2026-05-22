@@ -160,6 +160,48 @@ class SeenOfferMapperTest {
         assertEquals(21.4 / 18.458, seenOffer?.valuePerKm ?: 0.0, 0.02)
     }
 
+    @Test
+    fun ninetyNine_priceSelectionPrefersPrimaryOfferPriceOverNegotiationButtons() {
+        val seenOffer = mapper.fromPipelineResult(
+            fingerprint = fingerprint(
+                kind = OfferTextFingerprintKind.OFFER_LIKE,
+                platformHint = PlatformTextHint.NINETY_NINE,
+                price = 18.37,
+                valuePerKm = 1.23,
+                distances = listOf(
+                    ExtractedNumericCandidate("1,6 km", 1.6, "km", "DISTANCE_KM", 2),
+                    ExtractedNumericCandidate("13,4 km", 13.4, "km", "DISTANCE_KM", 2)
+                ),
+                times = listOf(
+                    ExtractedNumericCandidate("7 min", 7.0, "min", "TIME_MINUTES", 2),
+                    ExtractedNumericCandidate("27 min", 27.0, "min", "TIME_MINUTES", 2)
+                ),
+                extraPrices = listOf(19.29, 19.84, 20.21)
+            ),
+            observation = observation(
+                rawText = "Negocia Dinheiro R$18,37 R$1,23/km 7min (1,6km) 1 parada(s) 27min (13,4km) R$19,29 R$19,84 R$20,21"
+            ),
+            parserResult = OfferParserResult(
+                status = "parsed",
+                reason = "parsed",
+                draft = parsedDraft(
+                    platform = ParsedPlatform.NINETY_NINE,
+                    price = 18.37,
+                    valuePerKm = 1.23,
+                    pickupTimeMinutes = 7.0,
+                    pickupDistanceKm = 1.6,
+                    tripTimeMinutes = 27.0,
+                    tripDistanceKm = 13.4,
+                    rawTextPreview = "Negocia Dinheiro R$18,37 R$1,23/km"
+                )
+            )
+        )
+
+        assertEquals(18.37, seenOffer?.price ?: 0.0, 0.0)
+        assertEquals(15.0, seenOffer?.totalDistanceKm ?: 0.0, 0.05)
+        assertEquals(1.23, seenOffer?.valuePerKm ?: 0.0, 0.02)
+    }
+
     private fun parsedDraft(
         platform: ParsedPlatform = ParsedPlatform.UBER,
         price: Double = 12.5,
@@ -220,6 +262,7 @@ class SeenOfferMapperTest {
         platformHint: PlatformTextHint = PlatformTextHint.UBER,
         price: Double = 12.5,
         valuePerKm: Double = 2.1,
+        extraPrices: List<Double> = emptyList(),
         distances: List<ExtractedNumericCandidate> = listOf(
             ExtractedNumericCandidate("1,2 km", 1.2, "km", "DISTANCE_KM", 2),
             ExtractedNumericCandidate("4,8 km", 4.8, "km", "DISTANCE_KM", 2)
@@ -241,7 +284,8 @@ class SeenOfferMapperTest {
         nonOfferScore = 1,
         positiveSignals = listOf(ExtractedSignal("offer", "UberX", 3)),
         negativeSignals = emptyList(),
-        priceCandidates = listOf(ExtractedNumericCandidate("R$ $price", price, "BRL", "PRICE", 3)),
+        priceCandidates = listOf(ExtractedNumericCandidate("R$ $price", price, "BRL", "PRICE", 3)) +
+            extraPrices.map { ExtractedNumericCandidate("R$ $it", it, "BRL", "PRICE", 3) },
         valuePerKmCandidates = listOf(ExtractedNumericCandidate("R$ $valuePerKm/km", valuePerKm, "BRL_PER_KM", "VALUE_PER_KM", 3)),
         distanceCandidates = distances,
         timeCandidates = times,

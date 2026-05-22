@@ -141,6 +141,32 @@ class VisualOfferProbeTest {
     }
 
     @Test
+    fun ninetyNineVisualProbe_prefersLowerHalfThenCenter() {
+        val observation = observation(
+            triggerSource = TriggerSource.NINETY_NINE_VISUAL_PROBE,
+            metadata = ObservationMetadata(
+                notes = mapOf(
+                    "ninetyNineVisualProbePreferredCropOrder" to "LOWER_HALF,CENTER_CARD_AREA,LOWER_THIRD,FULL_DEBUG"
+                )
+            )
+        )
+        val candidates = listOf(
+            candidate("center", CropKind.CENTER_CARD_AREA),
+            candidate("lower", CropKind.LOWER_HALF),
+            candidate("third", CropKind.LOWER_THIRD)
+        )
+        val results = listOf(
+            result("center", CropKind.CENTER_CARD_AREA, score = 9),
+            result("lower", CropKind.LOWER_HALF, score = 5),
+            result("third", CropKind.LOWER_THIRD, score = 8)
+        )
+
+        val ranking = probe.rankCandidates(observation, candidates, results)
+
+        assertEquals(CropKind.LOWER_HALF, ranking.bestCandidate?.kind)
+    }
+
+    @Test
     fun ninetyNine_doesNotUseUberDominantFallback() {
         val observation = observation(triggerSource = TriggerSource.NINETY_NINE_TREE_STRUCTURE)
         val candidates = listOf(

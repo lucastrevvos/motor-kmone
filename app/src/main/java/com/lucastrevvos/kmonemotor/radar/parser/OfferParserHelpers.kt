@@ -92,15 +92,36 @@ class OfferParserHelpers(
     fun extractNinetyNinePassengerInfo(input: OfferParserInput): String? = extractPassengerInfo(input)
 
     fun selectMainPrice(input: OfferParserInput): ParsedMoney? {
-        val candidate = input.fingerprint.priceCandidates
-            .sortedByDescending { it.normalizedValue ?: Double.MIN_VALUE }
-            .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
-            ?: input.fingerprint.priceCandidates.maxByOrNull { it.normalizedValue ?: Double.MIN_VALUE }
+        val ninetyNineNegotiationContext = isNinetyNineNegotiationContext(input)
+        val candidate = if (ninetyNineNegotiationContext) {
+            input.fingerprint.priceCandidates
+                .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
+                ?: input.fingerprint.priceCandidates.firstOrNull()
+        } else {
+            input.fingerprint.priceCandidates
+                .sortedByDescending { it.normalizedValue ?: Double.MIN_VALUE }
+                .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
+                ?: input.fingerprint.priceCandidates.maxByOrNull { it.normalizedValue ?: Double.MIN_VALUE }
+        }
         val value = candidate?.normalizedValue ?: return null
         val confidence = when {
             candidate.raw.contains("r$", ignoreCase = true) && value >= 5.0 -> 0.95
             value >= 5.0 -> 0.75
             else -> 0.5
+        }
+        if (ninetyNineNegotiationContext) {
+            val negotiationOptions = input.fingerprint.priceCandidates
+                .dropWhile { it != candidate }
+                .drop(1)
+                .mapNotNull { it.normalizedValue }
+            RadarLogger.i(
+                "KM_V2_PARSER",
+                "KM_V2_99_PRICE_SELECTION",
+                "allPrices" to input.fingerprint.priceCandidates.mapNotNull { it.normalizedValue },
+                "selectedPrice" to value,
+                "negotiationOptions" to negotiationOptions,
+                "reason" to "first_primary_price_before_negotiation_options"
+            )
         }
         RadarLogger.i(
             "KM_V2_PARSER",
@@ -175,7 +196,7 @@ class OfferParserHelpers(
         if (pairs.size > 2) {
             warnings += "extra_route_pairs_detected"
         }
-        val selected = when (pairs.size) {
+        var selected = when (pairs.size) {
             0 -> RouteSelection(routeConfidence = 0.2)
             1 -> RouteSelection(
                 pickupTimeMinutes = pairs[0].timeMinutes,
@@ -190,7 +211,19 @@ class OfferParserHelpers(
                 routeConfidence = 0.9
             )
         }
-        if (pairs.size <= 1) {
+        val correctedByExplicitValuePerKm = if (isNinetyNineLikeContext(input) && pairs.size >= 2) {
+            maybeResolveNinetyNineRouteByExplicitValuePerKm(
+                input = input,
+                warnings = warnings,
+                explicitRoutePairs = pairs
+            )
+        } else {
+            null
+        }
+        if (correctedByExplicitValuePerKm != null) {
+            selected = correctedByExplicitValuePerKm
+        }
+        if (pairs.size <= 1 && correctedByExplicitValuePerKm == null) {
             warnings += "low_confidence_route"
         }
         RadarLogger.i(
@@ -229,6 +262,84 @@ class OfferParserHelpers(
             unit = "km",
             sourceText = "${price.sourceText}/${valuePerKm.sourceText}",
             confidence = 0.55
+        )
+    }
+
+    private fun isNinetyNineNegotiationContext(input: OfferParserInput): Boolean {
+        val text = input.normalizedText
+        return isNinetyNineLikeContext(input) &&
+            (text.contains("negocia") || text.contains("aceitar por"))
+    }
+
+    private fun isNinetyNineLikeContext(input: OfferParserInput): Boolean {
+        val text = input.normalizedText
+        return text.contains("r$/km") ||
+            text.contains("cpf") ||
+            text.contains("cartao verif") ||
+            text.contains("cartão verif") ||
+            text.contains("dinheiro") ||
+            text.contains("pagamento no app") ||
+            text.contains("taxa de deslocamento") ||
+            text.contains("corrida longa") ||
+            text.contains("negocia")
+    }
+
+    private fun maybeResolveNinetyNineRouteByExplicitValuePerKm(
+        input: OfferParserInput,
+        warnings: MutableList<String>,
+        explicitRoutePairs: List<RoutePair>
+    ): RouteSelection? {
+        val price = selectMainPrice(input)?.value ?: return null
+        val explicitValuePerKm = selectValuePerKm(input)?.value ?: return null
+        if (explicitValuePerKm <= 0.0) return null
+        val inferredTotal = price / explicitValuePerKm
+        if (explicitRoutePairs.size >= 2) {
+            val explicitSegmentTotal = explicitRoutePairs[0].distanceKm.value + explicitRoutePairs[1].distanceKm.value
+            val explicitDelta = kotlin.math.abs(explicitSegmentTotal - inferredTotal)
+            if (explicitDelta > 0.35 && explicitDelta / inferredTotal > 0.12) {
+                return null
+            }
+        }
+        val normalizedDistances = input.fingerprint.distanceCandidates.mapNotNull { candidate ->
+            val normalized = when (candidate.unit) {
+                "m" -> (candidate.normalizedValue ?: return@mapNotNull null) / 1000.0
+                else -> candidate.normalizedValue
+            } ?: return@mapNotNull null
+            Triple(candidate.raw, normalized, candidate.unit == "m")
+        }
+        val kmCandidates = normalizedDistances
+            .filter { (_, normalized, isMeter) -> !isMeter && normalized >= 0.3 }
+            .map { it.second }
+            .distinct()
+            .sorted()
+        if (kmCandidates.size < 2) {
+            return null
+        }
+        val pickup = kmCandidates.first()
+        val trip = kmCandidates.last()
+        val sum = pickup + trip
+        val delta = kotlin.math.abs(sum - inferredTotal)
+        if (delta > 0.35 && delta / inferredTotal > 0.12) {
+            return null
+        }
+        RadarLogger.i(
+            "KM_V2_PARSER",
+            "KM_V2_99_ROUTE_SELECTION_BY_EXPLICIT_VALUE_PER_KM",
+            "price" to price,
+            "explicitValuePerKm" to explicitValuePerKm,
+            "inferredTotalKm" to inferredTotal,
+            "candidateDistances" to kmCandidates,
+            "selectedPickupKm" to pickup,
+            "selectedTripKm" to trip,
+            "selectedTotalKm" to sum,
+            "delta" to delta,
+            "reason" to "pair_sum_closest_to_explicit_value_per_km"
+        )
+        warnings.remove("low_confidence_route")
+        return RouteSelection(
+            pickupDistanceKm = ParsedNumber(pickup, "km", "explicit_value_per_km_route_selection", 0.9),
+            tripDistanceKm = ParsedNumber(trip, "km", "explicit_value_per_km_route_selection", 0.9),
+            routeConfidence = 0.9
         )
     }
 

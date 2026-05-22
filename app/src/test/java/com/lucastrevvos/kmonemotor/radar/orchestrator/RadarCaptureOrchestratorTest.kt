@@ -98,7 +98,7 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
-    fun ninetyNineCompactTreeWithoutVisibleText_staysIgnored() {
+    fun ninetyNineCompactTreeWithoutVisibleText_createsVisualProbe() {
         val capturer = RecordingScreenshotCapturer()
         val orchestrator = RadarCaptureOrchestrator(
             screenshotCapturer = capturer,
@@ -114,11 +114,12 @@ class RadarCaptureOrchestratorTest {
             )
         )
 
-        assertTrue(capturer.requests.isEmpty())
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.NINETY_NINE_VISUAL_PROBE, capturer.requests.single().triggerSource)
     }
 
     @Test
-    fun ninetyNineCompactTreeWithSystemUiFloating_staysIgnored() {
+    fun ninetyNineCompactTreeWithSystemUiFloating_allowsVisualProbeForDominant99() {
         val capturer = RecordingScreenshotCapturer()
         val orchestrator = RadarCaptureOrchestrator(
             screenshotCapturer = capturer,
@@ -128,13 +129,14 @@ class RadarCaptureOrchestratorTest {
         orchestrator.onSignal(
             ninetyNineSignal(
                 nodeCount = 15,
-                visibleTextNodeCount = 2,
+                visibleTextNodeCount = 0,
                 floatingPackage = "com.android.systemui",
                 floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING
             )
         )
 
-        assertTrue(capturer.requests.isEmpty())
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.NINETY_NINE_VISUAL_PROBE, capturer.requests.single().triggerSource)
     }
 
     @Test
@@ -152,7 +154,8 @@ class RadarCaptureOrchestratorTest {
                 numericTextNodeCount = 1,
                 buttonLikeNodeCount = 1,
                 floatingPackage = "com.ubercab.driver",
-                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                knownStateTexts = listOf("Pagamento no app", "R$12,73", "CPF e Cartão verif")
             )
         )
 
@@ -161,6 +164,141 @@ class RadarCaptureOrchestratorTest {
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
             capturer.requests.single().triggerSource
         )
+    }
+
+    @Test
+    fun ninetyNineOperationalTextDesconectar_doesNotCreateCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L }
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 22,
+                visibleTextNodeCount = 4,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                knownStateTexts = listOf("desconectar")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun ninetyNineMapSearchingMultipliers_doesNotCreateCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L }
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 18,
+                visibleTextNodeCount = 4,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE,
+                knownStateTexts = listOf("Buscando", "1,1X-1,5X", "1,3X-1,7X")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun ninetyNineVisualProbe_isSuppressedDuringCooldown() {
+        val capturer = RecordingScreenshotCapturer()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 2_000L }
+        )
+
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 11,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+        orchestrator.onSignal(
+            ninetyNineSignal(
+                nodeCount = 12,
+                visibleTextNodeCount = 0,
+                floatingPackage = "com.ubercab.driver",
+                floatingKind = FloatingWindowKind.FLOATING_BUBBLE
+            )
+        )
+
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.NINETY_NINE_VISUAL_PROBE, capturer.requests.single().triggerSource)
+    }
+
+    @Test
+    fun uberDominantSearchingDisappearedEmptyTree_startsPreOfferWatchdogWithoutImmediateCapture() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 18,
+                visibleTextNodeCount = 0,
+                bottomHalfTextNodeCount = 0,
+                previousNodeCount = 8,
+                previousVisibleTextNodeCount = 2,
+                numericTextNodeCount = 0,
+                buttonLikeNodeCount = 0,
+                knownStateTexts = emptyList(),
+                previousKnownStateTexts = listOf("procurando viagens")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(1_199L)
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(1L)
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG, capturer.requests.single().triggerSource)
+    }
+
+    @Test
+    fun uberDominantSearchingDisappearedEmptyTree_withOperationalBlacklist_doesNotStartWatchdog() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 18,
+                visibleTextNodeCount = 0,
+                bottomHalfTextNodeCount = 0,
+                previousNodeCount = 8,
+                previousVisibleTextNodeCount = 2,
+                numericTextNodeCount = 0,
+                buttonLikeNodeCount = 0,
+                knownStateTexts = listOf("ganhos"),
+                previousKnownStateTexts = listOf("procurando viagens")
+            )
+        )
+
+        scheduler.advanceBy(6_000L)
+        assertTrue(capturer.requests.isEmpty())
     }
 
     @Test
@@ -490,11 +628,13 @@ class RadarCaptureOrchestratorTest {
     fun uberDominantEtaRangeAfterSearchingDisappeared_startsPreOfferWatchdog() {
         val capturer = RecordingScreenshotCapturer(autoFinish = true)
         val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
         val orchestrator = RadarCaptureOrchestrator(
             screenshotCapturer = capturer,
             clock = RadarClock { 3_000L },
             stabilizationScheduler = scheduler,
-            watchdogScheduler = scheduler
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
         )
 
         orchestrator.onSignal(
@@ -507,8 +647,10 @@ class RadarCaptureOrchestratorTest {
                 previousVisibleTextNodeCount = 9,
                 numericTextNodeCount = 1,
                 buttonLikeNodeCount = 1,
+                floatingPackage = "com.android.systemui",
+                floatingKind = FloatingWindowKind.SYSTEM_UI_FLOATING,
                 bottomHalfTextNodeCount = 9,
-                knownStateTexts = listOf("1-12 min", "1-5 min"),
+                knownStateTexts = listOf("1-10 min", "1-8 min", "1-9 min", "1-6 min"),
                 previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
             )
         )
@@ -521,6 +663,24 @@ class RadarCaptureOrchestratorTest {
         assertEquals(
             "FLOATING_BOUNDS_EXPANDED,LOWER_HALF,LOWER_THIRD,CENTER_CARD_AREA",
             capturer.requests.single().metadataNotes["preOfferWatchdogPreferredCropOrder"]
+        )
+        assertTrue(
+            diagnostics.snapshot().any {
+                it.stage == "trigger_rejected_pre_offer" &&
+                    it.reason == "map_eta_range_without_offer_evidence"
+            }
+        )
+        assertTrue(
+            diagnostics.snapshot().any {
+                it.stage == "watchdog_started" &&
+                    it.reason == "map_eta_range_without_offer_evidence"
+            }
+        )
+        assertTrue(
+            diagnostics.snapshot().none {
+                it.stage == "offer_card_signal_rejected" &&
+                    it.reason == "map_eta_range_without_offer_evidence"
+            }
         )
     }
 
@@ -553,6 +713,42 @@ class RadarCaptureOrchestratorTest {
 
         scheduler.advanceBy(6_000L)
         assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
+    fun uberDominantEtaRangeWithOperationalBlacklist_doesNotStartPreOfferWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 9,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("1-12 min", "ganhos"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        scheduler.advanceBy(6_000L)
+        assertTrue(capturer.requests.isEmpty())
+        assertTrue(
+            diagnostics.snapshot().none { it.stage == "watchdog_started" }
+        )
     }
 
     @Test
@@ -1310,7 +1506,8 @@ class RadarCaptureOrchestratorTest {
         floatingPackage: String,
         floatingKind: FloatingWindowKind,
         numericTextNodeCount: Int = 0,
-        buttonLikeNodeCount: Int = 0
+        buttonLikeNodeCount: Int = 0,
+        knownStateTexts: List<String> = emptyList()
     ) = RadarSignal.NinetyNineTreeStructureChanged(
         signature = NodeTreeSignature(
             packageName = "com.app99.driver",
@@ -1321,7 +1518,7 @@ class RadarCaptureOrchestratorTest {
             bottomHalfTextNodeCount = visibleTextNodeCount,
             numericTextNodeCount = numericTextNodeCount,
             buttonLikeNodeCount = buttonLikeNodeCount,
-            knownStateTexts = emptyList()
+            knownStateTexts = knownStateTexts
         ),
         dominantPackage = "com.app99.driver",
         floatingPackage = floatingPackage,

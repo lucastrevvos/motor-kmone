@@ -46,6 +46,7 @@ import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoCapturePipelineResult
 import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoAttemptTrace
 import com.lucastrevvos.kmonemotor.radar.orchestrator.AutoMissDiagnostics
 import com.lucastrevvos.kmonemotor.radar.orchestrator.RadarCaptureOrchestrator
+import com.lucastrevvos.kmonemotor.radar.orchestrator.NinetyNineNonOfferScreenClassifier
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParser
 import com.lucastrevvos.kmonemotor.radar.parser.OfferParserDebugWriter
 import com.lucastrevvos.kmonemotor.radar.presentation.DecisionPresentationDebugWriter
@@ -152,6 +153,7 @@ class KmRadarAccessibilityService : AccessibilityService() {
     private var latestWindowSnapshot: WindowStackSnapshot? = null
     private var latestNodeSignature: NodeTreeSignature? = null
     private var latestFloatingKind: FloatingWindowKind = FloatingWindowKind.UNKNOWN_FLOATING
+    private var lastKmOneOverlayShownAtMs: Long = Long.MIN_VALUE
     private val orchestrator by lazy {
         RadarCaptureOrchestrator(
             screenshotCapturer = screenshotCapturer,
@@ -347,6 +349,22 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 if (observation.isManual) {
                     processManualObservation(observation, bitmap)
                 } else {
+                    if (isRecentKmOneOverlayVisibleForNinetyNine(observation)) {
+                        RadarLogger.i(
+                            "KM_V2_AUTO",
+                            "KM_V2_99_VISUAL_PROBE_SUPPRESSED",
+                            "reason" to "recent_kmone_overlay_visible"
+                        )
+                        autoMissDiagnostics.recordAutoTrace(
+                            AutoAttemptTrace(
+                                timestampMs = clock.nowMs(),
+                                triggerSource = observation.triggerSource,
+                                stage = "recovery_suppressed",
+                                reason = "recent_kmone_overlay_visible"
+                            )
+                        )
+                        return@execute
+                    }
                     val visualResult = visualOfferProbe.run(observation, bitmap)
                     maybeRunOcr(observation, visualResult, bitmap)
                 }
@@ -960,9 +978,12 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             TriggerSource.NINETY_NINE_TREE_STRUCTURE,
-            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC -> listOf(
+            TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC,
+            TriggerSource.NINETY_NINE_VISUAL_PROBE -> listOf(
                 CropKind.LOWER_HALF,
                 CropKind.CENTER_CARD_AREA,
+                CropKind.LOWER_THIRD,
+                CropKind.FULL_DEBUG,
                 CropKind.PLATFORM_SPECIFIC_CANDIDATE
             )
             else -> listOf(CropKind.CENTER_CARD_AREA, CropKind.PLATFORM_SPECIFIC_CANDIDATE, CropKind.LOWER_HALF)
@@ -1356,6 +1377,48 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 )
             }
             fingerprintDebugWriter.write(fingerprint, observation)
+            if (observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE) {
+                val nonOfferSignal = NinetyNineNonOfferScreenClassifier.fromRawText(observation.rawText)
+                if (nonOfferSignal.isNonOfferMapScreen) {
+                    RadarLogger.i(
+                        "KM_V2_AUTO",
+                        "KM_V2_99_NON_OFFER_MAP_SCREEN_DETECTED",
+                        "hasSearchingText" to nonOfferSignal.hasSearchingText,
+                        "hasMultiplierText" to nonOfferSignal.hasMultiplierText,
+                        "hasOfferPrice" to nonOfferSignal.hasOfferPrice,
+                        "hasValuePerKm" to nonOfferSignal.hasValuePerKm,
+                        "hasStrong99OfferSignals" to nonOfferSignal.hasStrong99OfferSignals,
+                        "reason" to nonOfferSignal.reason
+                    )
+                    RadarLogger.i(
+                        "KM_V2_AUTO",
+                        "KM_V2_99_VISUAL_PROBE_RESULT",
+                        "fingerprintKind" to fingerprint.kind,
+                        "platform" to fingerprint.platformTextHint,
+                        "persistReason" to nonOfferSignal.reason,
+                        "nonOfferReason" to nonOfferSignal.reason
+                    )
+                    logOfferPipelineFinalResult(
+                        observation = observation,
+                        fingerprint = fingerprint,
+                        parserStatus = "skipped",
+                        parserReason = nonOfferSignal.reason,
+                        decisionStatus = "skipped",
+                        decisionReason = nonOfferSignal.reason,
+                        presentationStatus = "skipped",
+                        presentationReason = nonOfferSignal.reason,
+                        wasOverlayShown = false,
+                        overlayKind = null,
+                        persistenceResult = SeenOfferPersistenceResult(
+                            attempted = false,
+                            persisted = false,
+                            reason = nonOfferSignal.reason ?: "ninety_nine_map_searching_state"
+                        ),
+                        finalReason = nonOfferSignal.reason ?: "ninety_nine_map_searching_state"
+                    )
+                    return fingerprint
+                }
+            }
             if (observation.triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG &&
                 fingerprint.kind != OfferTextFingerprintKind.OFFER_LIKE
             ) {
@@ -1384,6 +1447,37 @@ class KmRadarAccessibilityService : AccessibilityService() {
                         reason = "watchdog_non_offer"
                     ),
                     finalReason = "watchdog_non_offer"
+                )
+                return fingerprint
+            }
+            if (observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE &&
+                fingerprint.kind != OfferTextFingerprintKind.OFFER_LIKE
+            ) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_99_VISUAL_PROBE_RESULT",
+                    "fingerprintKind" to fingerprint.kind,
+                    "platform" to fingerprint.platformTextHint,
+                    "persistReason" to "fingerprint_not_offer_like",
+                    "nonOfferReason" to "fingerprint_not_offer_like"
+                )
+                logOfferPipelineFinalResult(
+                    observation = observation,
+                    fingerprint = fingerprint,
+                    parserStatus = "skipped",
+                    parserReason = "fingerprint_not_offer_like",
+                    decisionStatus = "skipped",
+                    decisionReason = "fingerprint_not_offer_like",
+                    presentationStatus = "skipped",
+                    presentationReason = "fingerprint_not_offer_like",
+                    wasOverlayShown = false,
+                    overlayKind = null,
+                    persistenceResult = SeenOfferPersistenceResult(
+                        attempted = false,
+                        persisted = false,
+                        reason = "fingerprint_not_offer_like"
+                    ),
+                    finalReason = "fingerprint_not_offer_like"
                 )
                 return fingerprint
             }
@@ -1743,6 +1837,20 @@ class KmRadarAccessibilityService : AccessibilityService() {
     private fun releaseManualPreparedBitmaps(preparedBitmaps: Map<String, PreparedManualCrop<Bitmap>>) {
         manualBitmapPreparer.releaseAll(preparedBitmaps)
         RadarLogger.i("KM_V2_OCR", "KM_V2_MANUAL_BITMAP_RELEASED", "count" to preparedBitmaps.size)
+    }
+
+    private fun isRecentKmOneOverlayVisibleForNinetyNine(observation: ScreenObservation): Boolean {
+        if (
+            observation.triggerSource != TriggerSource.NINETY_NINE_TREE_STRUCTURE &&
+            observation.triggerSource != TriggerSource.NINETY_NINE_COMPACT_TREE_DIAGNOSTIC &&
+            observation.triggerSource != TriggerSource.NINETY_NINE_VISUAL_PROBE
+        ) {
+            return false
+        }
+        if (lastKmOneOverlayShownAtMs == Long.MIN_VALUE) {
+            return false
+        }
+        return clock.nowMs() - lastKmOneOverlayShownAtMs < 3_000L
     }
 
     private fun updateManualTiming(epoch: Long, transform: ManualAnalysisTiming.() -> ManualAnalysisTiming) {
@@ -2346,6 +2454,15 @@ class KmRadarAccessibilityService : AccessibilityService() {
                     "platform" to fingerprint.platformTextHint,
                     "persistReason" to persistenceResult.reason
                 )
+            } else if (observation.triggerSource == TriggerSource.NINETY_NINE_VISUAL_PROBE) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_99_VISUAL_PROBE_RESULT",
+                    "fingerprintKind" to fingerprint.kind,
+                    "platform" to fingerprint.platformTextHint,
+                    "persistReason" to persistenceResult.reason,
+                    "nonOfferReason" to resolvedFinalReason
+                )
             }
         } else if (
             fingerprint.kind == OfferTextFingerprintKind.OFFER_LIKE &&
@@ -2362,6 +2479,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 manualTriggerSource = observation.triggerSource.name,
                 timestampMs = clock.nowMs()
             )
+        }
+        if (wasOverlayShown) {
+            lastKmOneOverlayShownAtMs = clock.nowMs()
         }
         RadarLogger.i(
             "KM_V2_PIPELINE",
