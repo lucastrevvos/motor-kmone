@@ -42,6 +42,17 @@ class DecisionPresentationProcessor(
             }
             RadarLogger.i(
                 "KM_V2_PRESENTATION",
+                "KM_V2_PRESENTATION_DO_NOT_SHOW_REASON",
+                "reason" to reason,
+                "platform" to null,
+                "price" to decisionResult.result.metrics.price,
+                "totalDistanceKm" to decisionResult.result.metrics.totalDistanceKm,
+                "valuePerKm" to (decisionResult.result.metrics.grossPerTotalKm ?: decisionResult.result.metrics.valuePerKmExplicit),
+                "fingerprintKind" to null,
+                "parserStatus" to null
+            )
+            RadarLogger.i(
+                "KM_V2_PRESENTATION",
                 "KM_V2_DECISION_PRESENTATION_SKIPPED",
                 "observationId" to decisionResult.result.observationId,
                 "reason" to reason

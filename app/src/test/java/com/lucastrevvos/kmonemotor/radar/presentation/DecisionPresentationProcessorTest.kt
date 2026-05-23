@@ -24,6 +24,16 @@ class DecisionPresentationProcessorTest {
     }
 
     @Test
+    fun badAutomaticWithPlausibleEconomicsBuildsVisiblePresentation() {
+        val processor = DecisionPresentationProcessor(clock = RadarClock { 2_000L })
+
+        val result = processor.process(decisionResult(EconomicDecisionKind.BAD, DecisionSource.AUTOMATIC))
+
+        assertEquals("built", result.status)
+        assertEquals(DecisionPresentationKind.SHOW_BAD, result.presentation?.kind)
+    }
+
+    @Test
     fun unknownAutomaticIsSkippedButKeepsDoNotShowPresentation() {
         val processor = DecisionPresentationProcessor(clock = RadarClock { 2_000L })
 

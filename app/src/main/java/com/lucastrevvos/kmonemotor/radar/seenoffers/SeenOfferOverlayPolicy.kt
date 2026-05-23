@@ -60,6 +60,7 @@ object SeenOfferOverlayPolicy {
         val normalizedReason = persistenceResult.reason.trim().lowercase()
         return persistenceResult.seenOffer != null && (
             normalizedReason == "existing_observation_already_saved" ||
+                normalizedReason == "own_overlay_capture" ||
                 normalizedReason.startsWith("manual_recent_authority") ||
                 normalizedReason.contains("duplicate") ||
                 normalizedReason.contains("merged")

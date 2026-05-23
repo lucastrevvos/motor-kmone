@@ -145,6 +145,27 @@ class OfferParserTest {
     }
 
     @Test
+    fun longUberTripWithinPlausibleRangeDoesNotBlockEconomicDecision() {
+        val fingerprint = uberFingerprint(price = 129.31).copy(
+            priceCandidates = listOf(candidate(129.31, "PRICE", "BRL")),
+            distanceCandidates = listOf(
+                candidate(3.3, "DISTANCE_KM", "km"),
+                candidate(107.6, "DISTANCE_KM", "km")
+            ),
+            timeCandidates = listOf(candidate(7.0, "TIME_MINUTES", "min"))
+        )
+        val result = parser.process(
+            fingerprint = fingerprint,
+            ocrObservation = ocr("UberX Exclusivo R$ 129,31 7 min (3.3 km) 107.6 km"),
+            dedupeResult = dedupe(OfferDedupeDecision.NEW_OFFER_CANDIDATE)
+        )
+
+        assertEquals(107.6, result.draft?.tripDistanceKm?.value ?: 0.0, 0.0)
+        assertEquals(ParsedOfferSanityStatus.WARNING, result.draft?.sanityStatus)
+        assertTrue(result.draft?.shouldBlockEconomicDecisionFuture == false)
+    }
+
+    @Test
     fun looseUberNumberDoesNotBecomeMultiplier() {
         val result = parser.process(
             fingerprint = uberFingerprint(price = 15.15),

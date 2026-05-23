@@ -64,6 +64,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPersistenceResult
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferOverlayPolicy
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferPresentationFactory
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RideEconomicsCalculator
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferRuntime
 import com.lucastrevvos.kmonemotor.radar.signals.NodeTreeSignature
 import com.lucastrevvos.kmonemotor.radar.signals.FloatingWindowClassifier
@@ -1300,67 +1301,9 @@ class KmRadarAccessibilityService : AccessibilityService() {
                 "ocrObservationId" to observation.ocrObservationId,
                 "cropKind" to observation.cropKind
             )
-            if (!observation.isManual && AutomaticCaptureFrameFilter.isSelfOverlayContaminated(observation.rawText)) {
-                val abortedFingerprint = OfferTextFingerprint(
-                    fingerprintId = UUID.randomUUID().toString(),
-                    ocrObservationId = observation.ocrObservationId,
-                    observationId = observation.observationId,
-                    captureRequestId = observation.captureRequestId,
-                    triggerSource = observation.triggerSource,
-                    cropKind = observation.cropKind,
-                    platformTextHint = PlatformTextHint.UNKNOWN,
-                    kind = OfferTextFingerprintKind.UNKNOWN,
-                    offerLikeScore = 0,
-                    nonOfferScore = 0,
-                    positiveSignals = emptyList(),
-                    negativeSignals = emptyList(),
-                    priceCandidates = emptyList(),
-                    valuePerKmCandidates = emptyList(),
-                    distanceCandidates = emptyList(),
-                    timeCandidates = emptyList(),
-                    rawTextHash = "",
-                    routeTextHash = null,
-                    normalizedPreview = observation.rawTextPreview(),
-                    reason = "own_overlay_capture",
-                    createdAtMs = clock.nowMs()
-                )
-                RadarLogger.i(
-                    "KM_V2_AUTO",
-                    "KM_V2_SELF_OVERLAY_PIPELINE_ABORTED",
-                    "observationId" to observation.observationId,
-                    "triggerSource" to observation.triggerSource,
-                    "cropKind" to observation.cropKind,
-                    "rawTextPreview" to observation.rawTextPreview(),
-                    "reason" to "own_overlay_capture"
-                )
-                RadarDebugStore.updateFingerprintSummary(
-                    kind = abortedFingerprint.kind.name,
-                    platformHint = abortedFingerprint.platformTextHint.name,
-                    offerLikeScore = 0,
-                    nonOfferScore = 0,
-                    pricePreview = null,
-                    reason = abortedFingerprint.reason
-                )
-                logOfferPipelineFinalResult(
-                    observation = observation,
-                    fingerprint = abortedFingerprint,
-                    parserStatus = "skipped",
-                    parserReason = "own_overlay_capture",
-                    decisionStatus = "skipped",
-                    decisionReason = "own_overlay_capture",
-                    presentationStatus = "skipped",
-                    presentationReason = "own_overlay_capture",
-                    wasOverlayShown = false,
-                    overlayKind = null,
-                    burstOutcome = AutoBurstOutcome(),
-                    persistenceResult = SeenOfferPersistenceResult(
-                        attempted = false,
-                        persisted = false,
-                        reason = "own_overlay_capture"
-                    ),
-                    finalReason = "own_overlay_capture"
-                )
-                return abortedFingerprint
+            val matchedOwnOverlayTerms = AutomaticCaptureFrameFilter.matchedSelfOverlayTerms(observation.rawText)
+            if (AutomaticCaptureFrameFilter.isSelfOverlayContaminated(observation.rawText)) {
+                return handleOwnOverlayCapture(observation, matchedOwnOverlayTerms)
             }
             val fingerprint = fingerprintExtractor.extract(observation)
             val finishedAtMs = clock.nowMs()
@@ -1898,6 +1841,139 @@ class KmRadarAccessibilityService : AccessibilityService() {
             running = false,
             cooldownRemainingMs = ManualAnalysisState.snapshot(nowMs).cooldownRemainingMs
         )
+    }
+
+    private fun handleOwnOverlayCapture(
+        observation: OcrObservation,
+        matchedTerms: List<String>
+    ): OfferTextFingerprint {
+        val abortedFingerprint = buildOwnOverlayCaptureFingerprint(observation)
+        RadarLogger.i(
+            "KM_V2_AUTO",
+            "KM_V2_OWN_OVERLAY_CAPTURE_DETECTED",
+            "triggerSource" to observation.triggerSource,
+            "reason" to "kmone_overlay_text_detected",
+            "matchedTerms" to matchedTerms.joinToString(",")
+        )
+        RadarDebugStore.updateFingerprintSummary(
+            kind = abortedFingerprint.kind.name,
+            platformHint = abortedFingerprint.platformTextHint.name,
+            offerLikeScore = 0,
+            nonOfferScore = 0,
+            pricePreview = null,
+            reason = abortedFingerprint.reason
+        )
+        if (observation.isManual) {
+            val existingSeenOffer = findRecentSeenOfferForOverlayReuse()
+            if (existingSeenOffer != null) {
+                RadarLogger.i(
+                    "KM_V2_AUTO",
+                    "KM_V2_OWN_OVERLAY_CAPTURE_REUSED_SEEN_OFFER",
+                    "existingSeenOfferId" to existingSeenOffer.id,
+                    "triggerSource" to observation.triggerSource
+                )
+                val representation = seenOfferPresentationFactory.buildFromSeenOffer(
+                    seenOffer = existingSeenOffer,
+                    createdAtMs = clock.nowMs()
+                )
+                val representationShown = DecisionOverlayRuntime.get(this).showPresentation(representation)
+                val presentationStatus = if (representationShown) "shown_from_saved_offer" else "skipped"
+                logOfferPipelineFinalResult(
+                    observation = observation,
+                    fingerprint = abortedFingerprint,
+                    parserStatus = "skipped",
+                    parserReason = "own_overlay_capture",
+                    decisionStatus = "reused_seen_offer",
+                    decisionReason = "own_overlay_capture",
+                    presentationStatus = presentationStatus,
+                    presentationReason = representation.kind.name,
+                    wasOverlayShown = OverlayPresentationStatePolicy.wasOverlayShown(
+                        overlayKind = representation.kind.name,
+                        presentationStatus = presentationStatus,
+                        overlayShownByController = representationShown
+                    ),
+                    overlayKind = representation.kind.name,
+                    burstOutcome = AutoBurstOutcome(),
+                    persistenceResult = SeenOfferPersistenceResult(
+                        attempted = false,
+                        persisted = false,
+                        seenOffer = existingSeenOffer,
+                        reason = "weaker_duplicate_offer_recently_saved"
+                    ),
+                    finalReason = "weaker_duplicate_offer_recently_saved"
+                )
+                return abortedFingerprint
+            }
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_OWN_OVERLAY_CAPTURE_IGNORED",
+                "triggerSource" to observation.triggerSource,
+                "persistReason" to "own_overlay_capture"
+            )
+        } else {
+            RadarLogger.i(
+                "KM_V2_AUTO",
+                "KM_V2_SELF_OVERLAY_PIPELINE_ABORTED",
+                "observationId" to observation.observationId,
+                "triggerSource" to observation.triggerSource,
+                "cropKind" to observation.cropKind,
+                "rawTextPreview" to observation.rawTextPreview(),
+                "reason" to "own_overlay_capture"
+            )
+        }
+        logOfferPipelineFinalResult(
+            observation = observation,
+            fingerprint = abortedFingerprint,
+            parserStatus = "skipped",
+            parserReason = "own_overlay_capture",
+            decisionStatus = "skipped",
+            decisionReason = "own_overlay_capture",
+            presentationStatus = "skipped",
+            presentationReason = "own_overlay_capture",
+            wasOverlayShown = false,
+            overlayKind = null,
+            burstOutcome = AutoBurstOutcome(),
+            persistenceResult = SeenOfferPersistenceResult(
+                attempted = false,
+                persisted = false,
+                reason = "own_overlay_capture"
+            ),
+            finalReason = "own_overlay_capture"
+        )
+        return abortedFingerprint
+    }
+
+    private fun buildOwnOverlayCaptureFingerprint(observation: OcrObservation): OfferTextFingerprint {
+        return OfferTextFingerprint(
+            fingerprintId = UUID.randomUUID().toString(),
+            ocrObservationId = observation.ocrObservationId,
+            observationId = observation.observationId,
+            captureRequestId = observation.captureRequestId,
+            triggerSource = observation.triggerSource,
+            cropKind = observation.cropKind,
+            platformTextHint = PlatformTextHint.UNKNOWN,
+            kind = OfferTextFingerprintKind.UNKNOWN,
+            offerLikeScore = 0,
+            nonOfferScore = 0,
+            positiveSignals = emptyList(),
+            negativeSignals = emptyList(),
+            priceCandidates = emptyList(),
+            valuePerKmCandidates = emptyList(),
+            distanceCandidates = emptyList(),
+            timeCandidates = emptyList(),
+            rawTextHash = "",
+            routeTextHash = null,
+            normalizedPreview = observation.rawTextPreview(),
+            reason = "own_overlay_capture",
+            createdAtMs = clock.nowMs()
+        )
+    }
+
+    private fun findRecentSeenOfferForOverlayReuse(maxAgeMs: Long = 30_000L): SeenOffer? {
+        val nowMs = clock.nowMs()
+        return SeenOfferRuntime.get(this).seenOfferRepository
+            .listSeenOffers(limit = 10)
+            .firstOrNull { nowMs - it.updatedAtMs <= maxAgeMs }
     }
 
     private fun releaseManualPreparedBitmaps(preparedBitmaps: Map<String, PreparedManualCrop<Bitmap>>) {

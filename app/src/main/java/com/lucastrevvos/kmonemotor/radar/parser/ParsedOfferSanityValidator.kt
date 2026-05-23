@@ -94,8 +94,17 @@ class ParsedOfferSanityValidator {
         draft.tripDistanceKm?.let {
             if (it.value > MAX_NORMAL_TRIP_DISTANCE_KM) {
                 issues += ParsedOfferSanityIssue.TRIP_DISTANCE_OUT_OF_PLAUSIBLE_RANGE
-                status = maxStatus(status, if (it.value > MAX_PLAUSIBLE_TRIP_DISTANCE_KM) ParsedOfferSanityStatus.INVALID else ParsedOfferSanityStatus.SUSPICIOUS)
-                if (it.value > MAX_NORMAL_TRIP_DISTANCE_KM) {
+                val isPlausibleUberLongTrip = draft.platform == ParsedPlatform.UBER &&
+                    it.value <= MAX_PLAUSIBLE_TRIP_DISTANCE_KM
+                status = maxStatus(
+                    status,
+                    when {
+                        it.value > MAX_PLAUSIBLE_TRIP_DISTANCE_KM -> ParsedOfferSanityStatus.INVALID
+                        isPlausibleUberLongTrip -> ParsedOfferSanityStatus.WARNING
+                        else -> ParsedOfferSanityStatus.SUSPICIOUS
+                    }
+                )
+                if (it.value > MAX_PLAUSIBLE_TRIP_DISTANCE_KM || !isPlausibleUberLongTrip) {
                     blockEconomic = true
                 }
                 routeImplausibleLog(draft, "trip_distance", it.value, draft.tripTimeMinutes?.value)
