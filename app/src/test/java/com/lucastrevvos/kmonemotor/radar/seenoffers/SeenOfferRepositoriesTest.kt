@@ -432,6 +432,49 @@ class SeenOfferRepositoriesTest {
     }
 
     @Test
+    fun suspiciousUberManualEconomics_doesNotReplaceExistingPlausibleOffer() {
+        val repo = seenOfferRepository()
+        repo.saveSeenOffer(
+            offer(
+                id = "auto-uber",
+                observationId = "obs-auto",
+                platform = RidePlatform.UBER,
+                price = 16.16,
+                pickupDistanceKm = 0.1,
+                tripDistanceKm = 5.7,
+                totalDistanceKm = 5.8,
+                sourceTrigger = "UBER_PRE_OFFER_VISUAL_WATCHDOG",
+                createdAtMs = 1_000L
+            ).copy(
+                valuePerKm = 2.79,
+                rawTextPreview = "uberX Exclusivo R$ 16,16 1 min (0.1 km) 5.7km"
+            )
+        )
+
+        val result = repo.saveSeenOffer(
+            offer(
+                id = "manual-uber",
+                observationId = "obs-manual",
+                platform = RidePlatform.UBER,
+                price = 16.16,
+                pickupDistanceKm = 0.017,
+                tripDistanceKm = 0.1,
+                totalDistanceKm = 0.117,
+                sourceTrigger = "MANUAL_SCREEN_ANALYSIS",
+                createdAtMs = 5_000L
+            ).copy(
+                valuePerKm = 138.12,
+                rawTextPreview = "uberX Exclusivo R$ 16,16 17m 0.1km"
+            )
+        )
+
+        assertFalse(result.persisted)
+        assertEquals("weaker_duplicate_offer_recently_saved", result.reason)
+        assertEquals(5.8, repo.listSeenOffers().first().totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(2.79, repo.listSeenOffers().first().valuePerKm ?: 0.0, 0.02)
+    }
+
+    @Test
     fun acceptManually_createsSavedRideAndUpdatesStatus() {
         val seenRepo = seenOfferRepository()
         val rideRepo = savedRideRepository()

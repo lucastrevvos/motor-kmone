@@ -74,6 +74,25 @@ class EconomicDecisionEngineTest {
     }
 
     @Test
+    fun plausibleUberEconomicsDoesNotBecomeUnknown() {
+        val result = engine.evaluate(
+            input(
+                draft(
+                    price = 16.16,
+                    pickupDistanceKm = 0.1,
+                    pickupTimeMin = 1.0,
+                    tripDistanceKm = 5.7,
+                    tripTimeMin = null,
+                    valuePerKm = null
+                )
+            )
+        )
+
+        assertTrue(result.decision == EconomicDecisionKind.GOOD || result.decision == EconomicDecisionKind.WARNING)
+        assertEquals(2.79, result.metrics.grossPerTotalKm ?: 0.0, 0.02)
+    }
+
+    @Test
     fun lowConfidenceRouteAddsReason() {
         val result = engine.evaluate(input(draft(sanityIssues = listOf(ParsedOfferSanityIssue.LOW_CONFIDENCE_ROUTE))))
 

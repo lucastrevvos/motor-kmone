@@ -342,7 +342,7 @@ class OfferTextFingerprintExtractor(
     private companion object {
         val PRICE_REGEX = Regex("""r\$ ?([0-9]+(?:[.,][0-9]{1,2})?)""")
         val VALUE_PER_KM_REGEX = Regex("""(?:r\$ ?)?([0-9]+(?:[.,][0-9]{1,2})?)\s*/\s*km""")
-        val DISTANCE_M_REGEX = Regex("""\(?([0-9]{2,4})\s*m\)?""")
+        val DISTANCE_M_REGEX = Regex("""\(?([0-9]{2,4})\s*m(?!in)\b\)?""")
         val DISTANCE_KM_REGEX = Regex("""\(?([0-9]+(?:[.,][0-9])?)\s*km\)?""")
         val TIME_REGEX = Regex("""([0-9]{1,3})\s*min""")
         val MULTIPLIER_REGEX = Regex("""x\s*([0-9]+(?:[.,][0-9])?)""")

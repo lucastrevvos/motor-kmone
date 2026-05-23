@@ -78,6 +78,21 @@ class SeenOfferMapper(
             "valuePerKm" to mappedEconomics.valuePerKm,
             "warnings" to mappedEconomics.warnings.joinToString(",")
         )
+        if (platform == RidePlatform.UBER) {
+            RadarLogger.i(
+                "KM_V2_ROUTE",
+                "KM_V2_UBER_ROUTE_METRICS_AUDITED",
+                "observationId" to observation.observationId,
+                "price" to price,
+                "rawDistances" to fingerprint.distanceCandidates.map { it.raw }.joinToString(","),
+                "rejectedDistances" to distanceSelection.rejectedDistanceCandidates.joinToString(","),
+                "pickupDistanceKm" to mappedEconomics.pickupDistanceKm,
+                "tripDistanceKm" to mappedEconomics.tripDistanceKm,
+                "totalDistanceKm" to mappedEconomics.totalDistanceKm,
+                "computedValuePerKm" to mappedEconomics.valuePerKm,
+                "warnings" to mappedEconomics.warnings.joinToString(",")
+            )
+        }
         return SeenOffer(
             id = UUID.randomUUID().toString(),
             observationId = observation.observationId,
@@ -275,9 +290,43 @@ class SeenOfferMapper(
                 warnings = warnings.distinct()
             )
         }
+        val normalizedCandidates = fingerprint.distanceCandidates.mapNotNull { candidate ->
+            distanceFromCandidate(candidate)?.takeIf { it > 0.0 }?.let { normalized ->
+                Triple(candidate, normalized, candidate.unit == "m")
+            }
+        }
+        val hasPlausibleKmTrip = normalizedCandidates.any { (_, normalized, isMeter) ->
+            !isMeter && normalized >= 1.0
+        }
+        val rejectedTinyMeters = normalizedCandidates.filter { (candidate, normalized, isMeter) ->
+            isMeter && normalized < 0.05 && hasPlausibleKmTrip
+        }
+        rejectedTinyMeters.forEach { (candidate, _, _) ->
+            RadarLogger.i(
+                "KM_V2_ROUTE",
+                "KM_V2_UBER_ROUTE_METRIC_CANDIDATE_REJECTED",
+                "candidate" to candidate.raw,
+                "reason" to "tiny_meter_noise_near_valid_km_route"
+            )
+        }
+        val kmCandidates = normalizedCandidates
+            .filter { (_, normalized, isMeter) -> !isMeter && normalized >= 0.05 }
+            .map { it.second }
+            .distinct()
+            .sorted()
+        if (kmCandidates.size >= 2) {
+            return DistanceSelection(
+                pickupDistanceKm = kmCandidates.first(),
+                tripDistanceKm = kmCandidates.last(),
+                warnings = if (rejectedTinyMeters.isNotEmpty()) listOf("tiny_meter_noise_near_valid_km_route") else emptyList(),
+                rejectedDistanceCandidates = rejectedTinyMeters.map { it.first.raw }
+            )
+        }
         return DistanceSelection(
             pickupDistanceKm = distanceAt(fingerprint.distanceCandidates, 0),
-            tripDistanceKm = distanceAt(fingerprint.distanceCandidates, 1)
+            tripDistanceKm = distanceAt(fingerprint.distanceCandidates, 1),
+            warnings = if (rejectedTinyMeters.isNotEmpty()) listOf("tiny_meter_noise_near_valid_km_route") else emptyList(),
+            rejectedDistanceCandidates = rejectedTinyMeters.map { it.first.raw }
         )
     }
 
@@ -288,6 +337,7 @@ class SeenOfferMapper(
     private data class DistanceSelection(
         val pickupDistanceKm: Double?,
         val tripDistanceKm: Double?,
-        val warnings: List<String> = emptyList()
+        val warnings: List<String> = emptyList(),
+        val rejectedDistanceCandidates: List<String> = emptyList()
     )
 }

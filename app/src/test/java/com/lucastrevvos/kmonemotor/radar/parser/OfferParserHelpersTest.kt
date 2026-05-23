@@ -156,6 +156,30 @@ class OfferParserHelpersTest {
     }
 
     @Test
+    fun uberStandaloneTripKmIsAttachedWhenOnlyPickupPairExists() {
+        val warnings = mutableListOf<String>()
+        val route = helpers.selectRoute(
+            input(
+                rawText = "UberX Exclusivo R$ 16,16 1 min (0.1 km) 5.7 km",
+                distances = listOf(
+                    ExtractedNumericCandidate("17 m", 17.0, "m", "DISTANCE_M", 1),
+                    ExtractedNumericCandidate("0.1 km", 0.1, "km", "DISTANCE_KM", 2),
+                    ExtractedNumericCandidate("5.7 km", 5.7, "km", "DISTANCE_KM", 2)
+                ),
+                times = listOf(
+                    ExtractedNumericCandidate("1 min", 1.0, "min", "TIME_MINUTES", 2)
+                ),
+                platformTextHint = PlatformTextHint.UBER
+            ),
+            warnings
+        )
+
+        assertEquals(1.0, route.pickupTimeMinutes?.value ?: 0.0, 0.0)
+        assertEquals(0.1, route.pickupDistanceKm?.value ?: 0.0, 0.0)
+        assertEquals(5.7, route.tripDistanceKm?.value ?: 0.0, 0.0)
+    }
+
+    @Test
     fun estimatesDistanceFromPriceAndValuePerKmWhenMissing() {
         val warnings = mutableListOf<String>()
         val estimated = helpers.estimateTripDistance(

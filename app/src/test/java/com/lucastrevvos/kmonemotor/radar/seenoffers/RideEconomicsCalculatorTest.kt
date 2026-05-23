@@ -117,4 +117,19 @@ class RideEconomicsCalculatorTest {
         assertEquals(1.36, resolved.valuePerKm ?: 0.0, 0.02)
         assertTrue(resolved.warnings.contains("single_distance_total_inferred_from_explicit_value_per_km"))
     }
+
+    @Test
+    fun uber_plausiblePickupAndTripProduceStableEconomics() {
+        val resolved = RideEconomicsCalculator.resolveRideEconomics(
+            platform = RidePlatform.UBER,
+            price = 16.16,
+            explicitValuePerKm = null,
+            totalDistanceKm = null,
+            pickupDistanceKm = 0.1,
+            tripDistanceKm = 5.7
+        )
+
+        assertEquals(5.8, resolved.totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(2.79, resolved.valuePerKm ?: 0.0, 0.02)
+    }
 }

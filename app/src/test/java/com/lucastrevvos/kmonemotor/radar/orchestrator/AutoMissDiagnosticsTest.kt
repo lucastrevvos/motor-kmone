@@ -176,7 +176,7 @@ class AutoMissDiagnosticsTest {
     }
 
     @Test
-    fun manualSuccessAfterStaleOperationalRejection_reportsNoCardSignalAfterStaleOperationalState() {
+    fun manualSuccessAfterStaleOperationalRejectionWithoutWatchdog_reportsWatchdogNotStartedAfterStaleOperationalState() {
         diagnostics.recordAutoTrace(
             AutoAttemptTrace(
                 timestampMs = 11_000L,
@@ -200,9 +200,57 @@ class AutoMissDiagnosticsTest {
             timestampMs = 20_000L
         )
 
-        assertEquals("no_card_signal_after_stale_operational_state", diagnosis.likelyCause)
+        assertEquals("watchdog_not_started_after_stale_operational_state", diagnosis.likelyCause)
         assertEquals(9_000L, diagnosis.lastOperationalRejectionAgeMs)
         assertEquals("operational_earnings_money_without_offer_evidence", diagnosis.staleOperationalReason)
+    }
+
+    @Test
+    fun manualSuccessAfterStaleOperationalWatchdogFailure_reportsWatchdogFailedAfterStaleOperationalState() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_000L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "stale_operational_earnings_probe_candidate",
+                isOperationalScreen = true,
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE,
+                knownStateTexts = listOf("+R$ 19,50", "1-19min", "1-4min")
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_100L,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "watchdog_started",
+                reason = "stale_operational_earnings_probe_candidate",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_200L,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "pipeline_final",
+                fingerprintKind = "UNKNOWN",
+                persistReason = "watchdog_non_offer"
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-6-stale-watchdog",
+            manualPlatform = "UBER",
+            manualPrice = 21.39,
+            manualDistances = "1.6km,18.6km",
+            manualTimes = "4min,18min",
+            manualSelectedCropKind = "LOWER_HALF",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("watchdog_failed_after_stale_operational_state", diagnosis.likelyCause)
+        assertTrue(diagnosis.watchdogStartedAfterPreOffer)
+        assertEquals("stale_operational_earnings_probe_candidate", diagnosis.lastPreOfferReason)
     }
 
     @Test

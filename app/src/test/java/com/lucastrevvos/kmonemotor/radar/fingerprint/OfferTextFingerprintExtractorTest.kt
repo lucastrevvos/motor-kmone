@@ -47,6 +47,18 @@ class OfferTextFingerprintExtractorTest {
     }
 
     @Test
+    fun uberRouteOcrNormalization_doesNotTreatMinutesAsMeters() {
+        val fingerprint = extractor.extract(
+            ocr("uberX Exclusivo R$ 16,16 l min (0.l km) 17 min 5.7 km")
+        )
+
+        assertTrue(fingerprint.timeCandidates.any { it.normalizedValue == 1.0 })
+        assertTrue(fingerprint.distanceCandidates.any { it.normalizedValue == 0.1 && it.unit == "km" })
+        assertTrue(fingerprint.distanceCandidates.any { it.normalizedValue == 5.7 && it.unit == "km" })
+        assertTrue(fingerprint.distanceCandidates.none { it.normalizedValue == 17.0 && it.unit == "m" })
+    }
+
+    @Test
     fun integerPriceWithoutDecimal_isNormalizedInOfferContext() {
         val fingerprint = extractor.extract(
             ocr("UberX R$ 746 3 min (1.7 km)")

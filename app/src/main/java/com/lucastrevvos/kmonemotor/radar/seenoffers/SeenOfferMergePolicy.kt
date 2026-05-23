@@ -102,6 +102,16 @@ class SeenOfferMergePolicy(
         if (offer.platform == RidePlatform.NINETY_NINE && resolvedEconomics.valuePerKm != null && resolvedEconomics.valuePerKm > 8.0) {
             score -= 4
         }
+        if (offer.platform == RidePlatform.UBER && resolvedEconomics.valuePerKm != null && resolvedEconomics.valuePerKm > 20.0) {
+            score -= 6
+        }
+        if (offer.platform == RidePlatform.UBER && offer.price != null &&
+            resolvedEconomics.totalDistanceKm != null &&
+            resolvedEconomics.totalDistanceKm < 0.5 &&
+            offer.price > 5.0
+        ) {
+            score -= 6
+        }
         if (offer.productName?.let(SeenOfferSanitizationRules::isBadProductName) == true) {
             score -= 5
         }
@@ -125,16 +135,32 @@ class SeenOfferMergePolicy(
             pickupDistanceKm = candidate.pickupDistanceKm,
             tripDistanceKm = candidate.tripDistanceKm
         )
-        if (existing.platform != RidePlatform.NINETY_NINE && candidate.platform != RidePlatform.NINETY_NINE) {
-            return false
-        }
         if (
             existingEconomics.totalDistanceKm != null &&
             candidateEconomics.totalDistanceKm != null &&
+            existing.platform == RidePlatform.NINETY_NINE &&
+            candidate.platform == RidePlatform.NINETY_NINE &&
             existingEconomics.totalDistanceKm > 1.0 &&
             candidateEconomics.totalDistanceKm < existingEconomics.totalDistanceKm * 0.25 &&
             candidateEconomics.valuePerKm != null &&
             candidateEconomics.valuePerKm > 8.0
+        ) {
+            return true
+        }
+        if (
+            existing.platform == RidePlatform.UBER &&
+            candidate.platform == RidePlatform.UBER &&
+            existing.price != null &&
+            candidate.price != null &&
+            similarMoney(existing.price, candidate.price) &&
+            existingEconomics.totalDistanceKm != null &&
+            existingEconomics.totalDistanceKm >= 0.5 &&
+            (
+                (candidateEconomics.valuePerKm != null && candidateEconomics.valuePerKm > 20.0) ||
+                    (candidateEconomics.totalDistanceKm != null &&
+                        candidateEconomics.totalDistanceKm < 0.5 &&
+                        candidate.price > 5.0)
+                )
         ) {
             return true
         }

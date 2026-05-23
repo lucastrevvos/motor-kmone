@@ -59,16 +59,28 @@ class FileSeenOfferRepository(
                 "reason" to if (manualAuthority) "manual_recent_authority" else "duplicate_window_match"
             )
             if (mergePolicy.isEconomicsDowngrade(existing = duplicate, candidate = offer)) {
-                RadarLogger.i(
-                    "KM_V2_SEEN",
-                    "KM_V2_SAVED_OFFER_ECONOMICS_DOWNGRADE_IGNORED",
-                    "existingSeenOfferId" to duplicate.id,
-                    "newObservationId" to offer.observationId,
-                    "existingTotalDistanceKm" to duplicate.totalDistanceKm,
-                    "incomingTotalDistanceKm" to offer.totalDistanceKm,
-                    "existingValuePerKm" to duplicate.valuePerKm,
-                    "incomingValuePerKm" to offer.valuePerKm
-                )
+                if (duplicate.platform == RidePlatform.UBER && offer.platform == RidePlatform.UBER) {
+                    RadarLogger.i(
+                        "KM_V2_SEEN",
+                        "KM_V2_UBER_ECONOMICS_SUSPICIOUS_VALUE_IGNORED",
+                        "existingSeenOfferId" to duplicate.id,
+                        "candidateObservationId" to offer.observationId,
+                        "candidateValuePerKm" to offer.valuePerKm,
+                        "candidateTotalDistanceKm" to offer.totalDistanceKm,
+                        "reason" to "candidate_uber_economics_suspicious"
+                    )
+                } else {
+                    RadarLogger.i(
+                        "KM_V2_SEEN",
+                        "KM_V2_SAVED_OFFER_ECONOMICS_DOWNGRADE_IGNORED",
+                        "existingSeenOfferId" to duplicate.id,
+                        "newObservationId" to offer.observationId,
+                        "existingTotalDistanceKm" to duplicate.totalDistanceKm,
+                        "incomingTotalDistanceKm" to offer.totalDistanceKm,
+                        "existingValuePerKm" to duplicate.valuePerKm,
+                        "incomingValuePerKm" to offer.valuePerKm
+                    )
+                }
                 return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved")
             }
             if (mergePolicy.isPartialEconomicsDowngrade(existing = duplicate, candidate = offer)) {

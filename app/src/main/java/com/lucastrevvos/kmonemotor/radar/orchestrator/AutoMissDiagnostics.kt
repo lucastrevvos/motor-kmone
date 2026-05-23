@@ -175,6 +175,20 @@ class AutoMissDiagnostics(
         val lastRejectedPreOffer = recent.filter { it.stage == "trigger_rejected_pre_offer" }.maxByOrNull { it.timestampMs }
         val lastCaptureApproved = recent.filter { it.stage == "capture_approved" }.maxByOrNull { it.timestampMs }
         val lastWatchdogStarted = recent.filter { it.stage == "watchdog_started" }.maxByOrNull { it.timestampMs }
+        val lastUberWatchdogFailed = recent.filter {
+            it.triggerSource == TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG &&
+                (
+                    (it.stage == "fingerprint_result" && (it.fingerprintKind == "UNKNOWN" || it.fingerprintKind == "NON_OFFER")) ||
+                        (
+                            it.stage == "pipeline_final" && (
+                                it.persistReason == "watchdog_non_offer" ||
+                                    it.persistReason == "fingerprint_not_offer_like" ||
+                                    it.fingerprintKind == "UNKNOWN" ||
+                                    it.fingerprintKind == "NON_OFFER"
+                                )
+                            )
+                    )
+        }.maxByOrNull { it.timestampMs }
         val recent99Signals = recent.filter {
             it.stage == "ninety_nine_signal_emitted" ||
                 it.triggerSource == TriggerSource.NINETY_NINE_TREE_STRUCTURE ||
@@ -244,6 +258,27 @@ class AutoMissDiagnostics(
             manualPlatform == "NINETY_NINE" &&
                 recent99Signals.isNotEmpty() &&
                 recent.none { it.stage == "capture_approved" } -> "ninety_nine_signal_not_routed_to_capture"
+            lastOperationalRejection != null &&
+                (
+                    lastOperationalRejection.reason == "operational_earnings_money_without_offer_evidence" ||
+                        lastRejectedPreOffer?.reason == "stale_operational_earnings_probe_candidate"
+                    ) &&
+                lastOperationalRejectionAgeMs != null &&
+                lastOperationalRejectionAgeMs > 3_000L &&
+                !watchdogStartedAfterPreOffer &&
+                recent.none {
+                    it.timestampMs > lastOperationalRejection.timestampMs &&
+                        it.stage in setOf("stabilization_started", "capture_approved")
+                } -> "watchdog_not_started_after_stale_operational_state"
+            lastRejectedPreOffer != null &&
+                lastRejectedPreOffer.reason == "stale_operational_earnings_probe_candidate" &&
+                lastPreOfferAgeMs != null &&
+                lastPreOfferAgeMs > 3_000L &&
+                watchdogStartedAfterPreOffer &&
+                lastUberWatchdogFailed != null &&
+                recent.none {
+                    it.timestampMs > lastUberWatchdogFailed.timestampMs && it.stage == "capture_approved"
+                } -> "watchdog_failed_after_stale_operational_state"
             lastRejectedPreOffer != null &&
                 lastRejectedPreOffer.reason == "map_eta_range_without_offer_evidence" &&
                 lastPreOfferAgeMs != null &&
@@ -335,6 +370,7 @@ class AutoMissDiagnostics(
             return false
         }
         return normalized == "operational_earnings_money_without_offer_evidence" ||
+            normalized == "stale_operational_earnings_probe_candidate" ||
             normalized == "searching_text_without_price_product_or_route" ||
             normalized == "map_eta_range_without_offer_evidence" ||
             normalized == "button_like_without_price_product_or_route" ||

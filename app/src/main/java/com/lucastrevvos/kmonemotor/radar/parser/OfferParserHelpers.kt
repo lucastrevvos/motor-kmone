@@ -154,7 +154,9 @@ class OfferParserHelpers(
     }
 
     fun selectRoute(input: OfferParserInput, warnings: MutableList<String>): RouteSelection {
-        val pairs = ROUTE_PAIR_REGEX.findAll(input.rawText).map { match ->
+        val repairedRouteText = normalizer.repair(input.rawText, emitUberRouteDiagnostics = true)
+        val normalizedRouteText = normalizer.normalize(repairedRouteText).normalizedText
+        val pairs = ROUTE_PAIR_REGEX.findAll(normalizedRouteText).map { match ->
             val time = parseNumber(match.groupValues[1])
             val distance = normalizeDistanceKm(match.groupValues[2], match.groupValues[3])
             val source = match.value
@@ -173,7 +175,7 @@ class OfferParserHelpers(
         }.toList()
         if (pairs.isEmpty()) {
             when {
-                BROKEN_ROUTE_PAIR_REGEX.containsMatchIn(input.rawText) -> {
+                BROKEN_ROUTE_PAIR_REGEX.containsMatchIn(normalizedRouteText) -> {
                     warnings += "low_confidence_route"
                     RadarLogger.i(
                         "KM_V2_PARSER",
@@ -182,7 +184,7 @@ class OfferParserHelpers(
                         "reason" to "incomplete_pair"
                     )
                 }
-                LOOSE_TIME_OR_DISTANCE_REGEX.containsMatchIn(input.rawText) -> {
+                LOOSE_TIME_OR_DISTANCE_REGEX.containsMatchIn(normalizedRouteText) -> {
                     warnings += "low_confidence_route"
                     RadarLogger.i(
                         "KM_V2_PARSER",
@@ -210,6 +212,9 @@ class OfferParserHelpers(
                 tripDistanceKm = pairs[1].distanceKm,
                 routeConfidence = 0.9
             )
+        }
+        if (pairs.size == 1) {
+            maybeAttachStandaloneUberTripDistance(input, selected)?.let { selected = it }
         }
         val correctedByExplicitValuePerKm = if (isNinetyNineLikeContext(input) && pairs.size >= 2) {
             maybeResolveNinetyNineRouteByExplicitValuePerKm(
@@ -340,6 +345,55 @@ class OfferParserHelpers(
             pickupDistanceKm = ParsedNumber(pickup, "km", "explicit_value_per_km_route_selection", 0.9),
             tripDistanceKm = ParsedNumber(trip, "km", "explicit_value_per_km_route_selection", 0.9),
             routeConfidence = 0.9
+        )
+    }
+
+    private fun maybeAttachStandaloneUberTripDistance(
+        input: OfferParserInput,
+        selection: RouteSelection
+    ): RouteSelection? {
+        if (
+            selection.pickupDistanceKm == null ||
+            selection.tripDistanceKm != null ||
+            input.fingerprint.platformTextHint == PlatformTextHint.NINETY_NINE
+        ) {
+            return null
+        }
+        val pickupKm = selection.pickupDistanceKm.value
+        val kmCandidates = input.fingerprint.distanceCandidates.mapNotNull { candidate ->
+            val normalized = when (candidate.unit) {
+                "m" -> (candidate.normalizedValue ?: return@mapNotNull null) / 1000.0
+                else -> candidate.normalizedValue
+            } ?: return@mapNotNull null
+            Triple(candidate.raw, normalized, candidate.unit == "m")
+        }
+        kmCandidates
+            .filter { (_, normalized, isMeter) -> isMeter && normalized < 0.05 && kmCandidates.any { !it.third && it.second >= 1.0 } }
+            .forEach { (raw, _, _) ->
+                RadarLogger.i(
+                    "KM_V2_ROUTE",
+                    "KM_V2_UBER_ROUTE_METRIC_CANDIDATE_REJECTED",
+                    "candidate" to raw,
+                    "reason" to "tiny_meter_noise_near_valid_km_route"
+                )
+            }
+        val standaloneTripKm = kmCandidates
+            .filter { (_, normalized, isMeter) ->
+                !isMeter &&
+                    normalized >= 1.0 &&
+                    kotlin.math.abs(normalized - pickupKm) > 0.2
+            }
+            .maxByOrNull { it.second }
+            ?.second
+            ?: return null
+        return selection.copy(
+            tripDistanceKm = ParsedNumber(
+                value = standaloneTripKm,
+                unit = "km",
+                sourceText = "standalone_uber_trip_distance_candidate",
+                confidence = 0.7
+            ),
+            routeConfidence = maxOf(selection.routeConfidence, 0.75)
         )
     }
 

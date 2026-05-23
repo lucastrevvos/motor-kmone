@@ -940,14 +940,16 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
-    fun uberDominantOperationalMoneyScreen_doesNotStartPreOfferWatchdog() {
+    fun uberDominantOperationalMoneyWithEtaAndStrongTreeDelta_startsStaleOperationalPreOfferWatchdog() {
         val capturer = RecordingScreenshotCapturer(autoFinish = true)
         val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
         val orchestrator = RadarCaptureOrchestrator(
             screenshotCapturer = capturer,
             clock = RadarClock { 3_000L },
             stabilizationScheduler = scheduler,
-            watchdogScheduler = scheduler
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
         )
 
         orchestrator.onSignal(
@@ -957,17 +959,163 @@ class RadarCaptureOrchestratorTest {
                 nodeCount = 24,
                 visibleTextNodeCount = 9,
                 previousNodeCount = 24,
-                previousVisibleTextNodeCount = 9,
+                previousVisibleTextNodeCount = 2,
                 numericTextNodeCount = 1,
                 buttonLikeNodeCount = 1,
                 bottomHalfTextNodeCount = 9,
-                knownStateTexts = listOf("ganhos", "oportunidades", "+R$ 2", "1-12 min"),
+                knownStateTexts = listOf("+R$ 19,50", "+R$ 18,75", "+R$ 20", "1-19 min", "1-4 min", "1-7 min"),
                 previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
             )
         )
 
-        scheduler.advanceBy(6_000L)
         assertTrue(capturer.requests.isEmpty())
+        assertTrue(
+            diagnostics.snapshot().any {
+                it.stage == "trigger_rejected_pre_offer" &&
+                    it.reason == "stale_operational_earnings_probe_candidate"
+            }
+        )
+        assertTrue(
+            diagnostics.snapshot().any {
+                it.stage == "watchdog_started" &&
+                    it.reason == "stale_operational_earnings_probe_candidate"
+            }
+        )
+        assertTrue(
+            diagnostics.snapshot().none {
+                it.stage == "offer_card_signal_rejected" &&
+                    it.reason == "operational_earnings_money_without_offer_evidence"
+            }
+        )
+
+        scheduler.advanceBy(1_499L)
+        assertTrue(capturer.requests.isEmpty())
+
+        scheduler.advanceBy(1L)
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG, capturer.requests.single().triggerSource)
+
+        scheduler.advanceBy(1_999L)
+        assertEquals(1, capturer.requests.size)
+
+        scheduler.advanceBy(1L)
+        assertEquals(2, capturer.requests.size)
+
+        scheduler.advanceBy(2_999L)
+        assertEquals(2, capturer.requests.size)
+
+        scheduler.advanceBy(1L)
+        assertEquals(3, capturer.requests.size)
+    }
+
+    @Test
+    fun uberDominantOperationalMoneyAfterSearchingDisappeared_startsStaleOperationalPreOfferWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 8,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 8,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 8,
+                knownStateTexts = listOf("+R$ 19,50", "1-19 min", "1-4 min", "1-7 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+        assertTrue(
+            diagnostics.snapshot().any {
+                it.stage == "watchdog_started" &&
+                    it.reason == "stale_operational_earnings_probe_candidate"
+            }
+        )
+    }
+
+    @Test
+    fun uberDominantPureGanhosScreenWithoutEta_doesNotStartStaleOperationalWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 2,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("ganhos", "oportunidades", "+R$ 2", "confira as tendencias de ganhos"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        scheduler.advanceBy(6_500L)
+        assertTrue(capturer.requests.isEmpty())
+        assertTrue(
+            diagnostics.snapshot().none { it.stage == "watchdog_started" }
+        )
+    }
+
+    @Test
+    fun uberDominantOperationalMoneyWithHomeBlacklist_doesNotStartStaleOperationalWatchdog() {
+        val capturer = RecordingScreenshotCapturer(autoFinish = true)
+        val scheduler = FakeStabilizationScheduler()
+        val diagnostics = AutoMissDiagnostics()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            stabilizationScheduler = scheduler,
+            watchdogScheduler = scheduler,
+            autoMissDiagnostics = diagnostics
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.SEARCHING_RIDES,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 24,
+                previousVisibleTextNodeCount = 2,
+                numericTextNodeCount = 1,
+                buttonLikeNodeCount = 1,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("página inicial", "+R$ 19,50", "1-19 min", "1-4 min"),
+                previousKnownStateTexts = listOf("procurando viagens", "1-12 min")
+            )
+        )
+
+        scheduler.advanceBy(6_500L)
+        assertTrue(capturer.requests.isEmpty())
+        assertTrue(
+            diagnostics.snapshot().none { it.stage == "watchdog_started" }
+        )
     }
 
     @Test

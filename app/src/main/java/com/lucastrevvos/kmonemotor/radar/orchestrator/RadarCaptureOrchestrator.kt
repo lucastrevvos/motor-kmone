@@ -662,8 +662,16 @@ class RadarCaptureOrchestrator(
             )
         }
 
+        val staleOperationalProbeCandidateReason = staleOperationalEarningsProbeCandidateReason(
+            signal = signal,
+            matchedConditions = matchedConditions,
+            treeTextSignals = treeTextSignals,
+            mapSearchingTreeSignal = mapSearchingTreeSignal,
+            visibleTextDelta = visibleTextDelta
+        )
         val forcedPreOfferReason = when {
             preOfferProbeCandidateReason != null -> preOfferProbeCandidateReason
+            staleOperationalProbeCandidateReason != null -> staleOperationalProbeCandidateReason
             treeTextSignals.rejectionReason == "map_eta_range_without_offer_evidence" &&
                 !PreOfferVisualWatchdog.hasHardBlacklist(signal.knownStateTexts) &&
                 !treeTextSignals.hasSearchingText -> "map_eta_range_without_offer_evidence"
@@ -700,6 +708,9 @@ class RadarCaptureOrchestrator(
                 matchedConditions = matchedConditions,
                 treeTextSignals = treeTextSignals,
                 rejectionReason = forcedPreOfferReason,
+                originalRejectionReason = treeTextSignals.rejectionReason,
+                visibleTextDelta = visibleTextDelta,
+                mapSearchingTreeSignal = mapSearchingTreeSignal,
                 nowMs = nowMs,
                 epoch = epoch
             )
@@ -1967,6 +1978,9 @@ class RadarCaptureOrchestrator(
         matchedConditions: List<String>,
         treeTextSignals: UberTreeTextSignals,
         rejectionReason: String?,
+        originalRejectionReason: String?,
+        visibleTextDelta: Int,
+        mapSearchingTreeSignal: Boolean,
         nowMs: Long,
         epoch: Long
     ) {
@@ -1974,10 +1988,17 @@ class RadarCaptureOrchestrator(
             rejectionReason = rejectionReason,
             matchedConditions = matchedConditions,
             knownStateTexts = signal.knownStateTexts,
-            isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen
+            isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+            visibleTextDelta = visibleTextDelta,
+            mapSearchingTreeSignal = mapSearchingTreeSignal,
+            currentState = signal.currentState,
+            autoState = autoStateMachine.snapshot().state
         )
         if (!plan.shouldStart) {
-            if (rejectionReason == "map_eta_range_without_offer_evidence") {
+            if (
+                rejectionReason == "map_eta_range_without_offer_evidence" ||
+                rejectionReason == "stale_operational_earnings_probe_candidate"
+            ) {
                 RadarLogger.i(
                     "KM_V2_ORCHESTRATOR",
                     "KM_V2_PRE_OFFER_WATCHDOG_EXPECTED_BUT_NOT_STARTED",
@@ -2006,6 +2027,7 @@ class RadarCaptureOrchestrator(
             "KM_V2_ORCHESTRATOR",
             "KM_V2_PRE_OFFER_WATCHDOG_STARTED",
             "reason" to pendingPreOfferWatchdog?.reason,
+            "originalReason" to originalRejectionReason,
             "delaysMs" to plan.delaysMs.joinToString(",")
         )
         autoMissDiagnostics.recordAutoTrace(
@@ -2222,6 +2244,33 @@ class RadarCaptureOrchestrator(
             return null
         }
         return "searching_disappeared_empty_tree_probe_candidate"
+    }
+
+    private fun staleOperationalEarningsProbeCandidateReason(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals,
+        mapSearchingTreeSignal: Boolean,
+        visibleTextDelta: Int
+    ): String? {
+        if (treeTextSignals.rejectionReason != "operational_earnings_money_without_offer_evidence") {
+            return null
+        }
+        val plan = PreOfferVisualWatchdog.planStart(
+            rejectionReason = "stale_operational_earnings_probe_candidate",
+            matchedConditions = matchedConditions,
+            knownStateTexts = signal.knownStateTexts,
+            isOperationalScreen = treeTextSignals.operationalScreen.isOperationalScreen,
+            visibleTextDelta = visibleTextDelta,
+            mapSearchingTreeSignal = mapSearchingTreeSignal,
+            currentState = signal.currentState,
+            autoState = autoStateMachine.snapshot().state
+        )
+        return if (plan.shouldStart) {
+            "stale_operational_earnings_probe_candidate"
+        } else {
+            null
+        }
     }
 
     private fun hasOfferCardTreeSignal(

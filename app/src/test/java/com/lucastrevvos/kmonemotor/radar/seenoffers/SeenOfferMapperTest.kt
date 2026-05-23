@@ -202,6 +202,48 @@ class SeenOfferMapperTest {
         assertEquals(1.23, seenOffer?.valuePerKm ?: 0.0, 0.02)
     }
 
+    @Test
+    fun uber_tinyMeterNoiseIsRejectedWhenValidKmRouteExists() {
+        val seenOffer = mapper.fromPipelineResult(
+            fingerprint = fingerprint(
+                kind = OfferTextFingerprintKind.OFFER_LIKE,
+                platformHint = PlatformTextHint.UBER,
+                price = 16.16,
+                distances = listOf(
+                    ExtractedNumericCandidate("17 m", 17.0, "m", "DISTANCE_M", 1),
+                    ExtractedNumericCandidate("0.1 km", 0.1, "km", "DISTANCE_KM", 2),
+                    ExtractedNumericCandidate("5.7 km", 5.7, "km", "DISTANCE_KM", 2)
+                ),
+                times = listOf(
+                    ExtractedNumericCandidate("1 min", 1.0, "min", "TIME_MINUTES", 2),
+                    ExtractedNumericCandidate("17 min", 17.0, "min", "TIME_MINUTES", 2)
+                )
+            ),
+            observation = observation(
+                rawText = "2 uberX Exclusivo R$ 16,16 l min (0.l km) 17 min 5.7km"
+            ),
+            parserResult = OfferParserResult(
+                status = "parsed",
+                reason = "parsed",
+                draft = parsedDraft(
+                    platform = ParsedPlatform.UBER,
+                    price = 16.16,
+                    valuePerKm = 2.79,
+                    pickupTimeMinutes = 1.0,
+                    pickupDistanceKm = 0.1,
+                    tripTimeMinutes = null,
+                    tripDistanceKm = 5.7,
+                    rawTextPreview = "uberX Exclusivo R$ 16,16 l min (0.l km) 5.7km"
+                )
+            )
+        )
+
+        assertEquals(0.1, seenOffer?.pickupDistanceKm ?: 0.0, 0.0)
+        assertEquals(5.7, seenOffer?.tripDistanceKm ?: 0.0, 0.0)
+        assertEquals(5.8, seenOffer?.totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(2.79, seenOffer?.valuePerKm ?: 0.0, 0.02)
+    }
+
     private fun parsedDraft(
         platform: ParsedPlatform = ParsedPlatform.UBER,
         price: Double = 12.5,
