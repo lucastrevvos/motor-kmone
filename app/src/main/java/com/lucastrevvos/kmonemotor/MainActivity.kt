@@ -52,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +69,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lucastrevvos.kmonemotor.radar.core.FloatingWindowKind
-import com.lucastrevvos.kmonemotor.radar.core.ManualAnalysisRequestBus
 import com.lucastrevvos.kmonemotor.radar.core.OperationalAppState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugState
 import com.lucastrevvos.kmonemotor.radar.debug.RadarDebugStore
@@ -115,12 +115,13 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             KMONEMotorTheme(dynamicColor = false) {
-                val debugState by RadarDebugStore.state.collectAsStateWithLifecycle()
-                KmOneApp(debugState = debugState)
+                KmOneApp()
             }
         }
     }
 }
+
+private const val ENABLE_HOME_PERF_LOGS = false
 
 private enum class AppTab(
     val label: String,
@@ -177,7 +178,7 @@ private sealed class RecordsListItem {
 }
 
 @Composable
-private fun KmOneApp(debugState: RadarDebugState) {
+private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     val context = LocalContext.current
     val module = remember { SeenOfferRuntime.get(context) }
     val homeSummaryProvider = remember {
@@ -211,7 +212,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
         return runCatching {
             withContext(Dispatchers.IO) {
-                module.seenOfferRepository.listSeenOffers(limit = 200)
+                module.seenOfferRepository.listSeenOffers(limit = 500)
             }
         }.onSuccess { offers ->
             seenState = SeenOffersUiState(offers = offers, isLoading = false, errorMessage = null)
@@ -227,7 +228,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
         ridesError = null
         return runCatching {
             withContext(Dispatchers.IO) {
-                module.savedRideRepository.listSavedRides(limit = 100)
+                module.savedRideRepository.listSavedRides(limit = 500)
             }
         }.onSuccess { rides ->
             savedRides = rides
@@ -287,7 +288,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
         RadarDebugStore.updatePiuOverlayState(
             permissionGranted = permissionGranted,
             showing = overlayController.isShowing(),
-            x = debugState.piuLastX
+            x = RadarDebugStore.state.value.piuLastX
         )
         refreshAll()
     }
@@ -301,6 +302,17 @@ private fun KmOneApp(debugState: RadarDebugState) {
     LaunchedEffect(Unit) {
         delay(1000L)
         showLaunchBrand = false
+    }
+
+    val appBackgroundBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                KmOnePalette.BackgroundDeep,
+                KmOnePalette.Background,
+                Color(0xFF06251A),
+                KmOnePalette.BackgroundDeep
+            )
+        )
     }
 
     if (showLaunchBrand) {
@@ -321,76 +333,106 @@ private fun KmOneApp(debugState: RadarDebugState) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(
-                            KmOnePalette.BackgroundDeep,
-                            KmOnePalette.Background,
-                            Color(0xFF06251A),
-                            KmOnePalette.BackgroundDeep
-                        )
-                    )
-                )
+                .background(appBackgroundBrush)
                 .padding(innerPadding)
         ) {
             when (selectedTab) {
-                AppTab.HOME -> HomeDashboardFinalTab(
-                    debugState = debugState,
-                    homeState = homeState,
-                    seenOffers = seenState.offers,
-                    savedRides = savedRides,
-                    fuelEntries = fuelEntries,
-                    onOpenAccessibility = {
-                        context.startActivity(
-                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    },
-                    onRequestOverlayPermission = {
-                        RadarLogger.i("KM_V2_OVERLAY", "KM_V2_PIU_OVERLAY_PERMISSION_REQUESTED")
-                        if (!Settings.canDrawOverlays(context)) {
-                            context.startActivity(
-                                Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}")
-                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                AppTab.HOME -> {
+                    val debugState by if (debugStateOverride == null) {
+                        RadarDebugStore.state.collectAsStateWithLifecycle()
+                    } else {
+                        rememberUpdatedState(debugStateOverride)
+                    }
+                    HomeDashboardFinalTab(
+                        debugState = debugState,
+                        homeState = homeState,
+                        resolvedSummary = remember(seenState.offers, savedRides, driverSettings.dailyGoalBrl) {
+                            homeSummaryProvider.summarize(
+                                seenOffers = seenState.offers,
+                                savedRides = savedRides
                             )
-                        }
-                    },
-                    onShowPiu = {
-                        val shown = overlayController.show()
-                        RadarDebugStore.updatePiuOverlayState(
-                            permissionGranted = Settings.canDrawOverlays(context),
-                            showing = shown,
-                            x = debugState.piuLastX
-                        )
-                    },
-                    onHidePiu = {
-                        overlayController.hide()
-                        RadarDebugStore.updatePiuOverlayState(
-                            permissionGranted = Settings.canDrawOverlays(context),
-                            showing = false,
-                            x = debugState.piuLastX
-                        )
-                    },
-                    onManualAnalyze = {
-                        val requested = ManualAnalysisRequestBus.requestAnalysis(
-                            source = "home_manual_action",
-                            clickedAtMs = System.currentTimeMillis()
-                        )
-                        if (!requested) {
-                            RadarLogger.w(
-                                "KM_V2_OVERLAY",
-                                "KM_V2_PIU_ERROR",
-                                "message" to "manual_analysis_listener_not_registered"
+                        },
+                        seenOffers = seenState.offers,
+                        savedRides = savedRides,
+                        fuelEntries = fuelEntries,
+                        onToggleRadar = {
+                            val currentVisible = debugState.piuOverlayShowing
+                            val targetVisible = !currentVisible
+                            RadarLogger.i(
+                                "KM_V2_HOME",
+                                "KM_V2_HOME_RADAR_TOGGLE_CLICKED",
+                                "currentVisible" to currentVisible,
+                                "targetVisible" to targetVisible
                             )
-                        }
-                    },
-                    onConfigureGoal = { selectedTab = AppTab.CONFIG },
-                    onOpenSeen = { selectedTab = AppTab.SEEN },
-                    onOpenRecords = { selectedTab = AppTab.RIDES },
-                    onOpenConfig = { selectedTab = AppTab.CONFIG }
-                )
+                            when {
+                                !debugState.serviceActive -> {
+                                    RadarLogger.w(
+                                        "KM_V2_HOME",
+                                        "KM_V2_HOME_RADAR_TOGGLE_BLOCKED",
+                                        "reason" to "missing_accessibility"
+                                    )
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                                !Settings.canDrawOverlays(context) -> {
+                                    RadarLogger.w(
+                                        "KM_V2_HOME",
+                                        "KM_V2_HOME_RADAR_TOGGLE_BLOCKED",
+                                        "reason" to "missing_overlay_permission"
+                                    )
+                                    context.startActivity(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                                currentVisible -> {
+                                    overlayController.hide()
+                                    RadarDebugStore.updatePiuOverlayState(
+                                        permissionGranted = true,
+                                        showing = false,
+                                        x = debugState.piuLastX
+                                    )
+                                    RadarLogger.i(
+                                        "KM_V2_HOME",
+                                        "KM_V2_HOME_RADAR_VISIBILITY_CHANGED",
+                                        "visible" to false,
+                                        "source" to "home_analyze_offer_button"
+                                    )
+                                }
+                                else -> {
+                                    val shown = overlayController.show()
+                                    RadarDebugStore.updatePiuOverlayState(
+                                        permissionGranted = true,
+                                        showing = shown,
+                                        x = debugState.piuLastX
+                                    )
+                                    if (shown) {
+                                        RadarLogger.i(
+                                            "KM_V2_HOME",
+                                            "KM_V2_HOME_RADAR_VISIBILITY_CHANGED",
+                                            "visible" to true,
+                                            "source" to "home_analyze_offer_button"
+                                        )
+                                    } else {
+                                        RadarLogger.w(
+                                            "KM_V2_HOME",
+                                            "KM_V2_HOME_RADAR_TOGGLE_BLOCKED",
+                                            "reason" to "service_not_ready"
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        onConfigureGoal = { selectedTab = AppTab.CONFIG },
+                        onOpenSeen = { selectedTab = AppTab.SEEN },
+                        onOpenRecords = { selectedTab = AppTab.RIDES },
+                        onOpenConfig = { selectedTab = AppTab.CONFIG }
+                    )
+                }
 
                 AppTab.SEEN -> SeenOffersTab(
                     state = seenState,
@@ -408,8 +450,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                     )
                                 }
                             }
-                            reloadSeenOffers()
-                            reloadSavedRides()
+                            refreshAll()
                         }
                     },
                     onIgnore = { offerId ->
@@ -419,10 +460,10 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                 RadarLogger.i(
                                     "KM_V2_SEEN",
                                     "KM_V2_SEEN_OFFER_IGNORED_FROM_VIEWS",
-                                    "seenOfferId" to offerId
+                                        "seenOfferId" to offerId
                                 )
                             }
-                            reloadSeenOffers()
+                            refreshAll()
                         }
                     },
                     onClearPending = { pendingOfferIds ->
@@ -442,7 +483,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                 "KM_V2_SEEN_OFFERS_CLEAR_PENDING_DONE",
                                 "count" to pendingOfferIds.size
                             )
-                            reloadSeenOffers()
+                            refreshAll()
                         }
                     }
                 )
@@ -502,13 +543,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                     )
                                 }
                             }
-                            val rides = reloadSavedRides()
-                            homeState = homeState.copy(
-                                summary = homeSummaryProvider.summarize(
-                                    seenOffers = seenState.offers,
-                                    savedRides = rides
-                                )
-                            )
+                            refreshAll()
                         }
                     },
                     onDeleteRide = { savedRideId ->
@@ -528,13 +563,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                     "savedRideId" to savedRideId
                                 )
                             }
-                            reloadSavedRides()
-                            homeState = homeState.copy(
-                                summary = homeSummaryProvider.summarize(
-                                    seenOffers = seenState.offers,
-                                    savedRides = savedRides
-                                )
-                            )
+                            refreshAll()
                         }
                     },
                     onDeleteFuelEntry = { fuelEntryId ->
@@ -559,25 +588,31 @@ private fun KmOneApp(debugState: RadarDebugState) {
                     }
                 )
 
-                AppTab.CONFIG -> ConfigTab(
-                    debugState = debugState,
-                    settings = driverSettings,
-                    isExportingLogs = debugExporting,
-                    exportMessage = debugExportMessage,
-                    onSaveDailyGoal = { dailyGoal ->
-                        coroutineScope.launch {
-                            withContext(Dispatchers.IO) {
-                                module.driverSettingsRepository.updateDailyGoal(dailyGoal)
+                AppTab.CONFIG -> {
+                    val debugState by if (debugStateOverride == null) {
+                        RadarDebugStore.state.collectAsStateWithLifecycle()
+                    } else {
+                        rememberUpdatedState(debugStateOverride)
+                    }
+                    ConfigTab(
+                        debugState = debugState,
+                        settings = driverSettings,
+                        isExportingLogs = debugExporting,
+                        exportMessage = debugExportMessage,
+                        onSaveDailyGoal = { dailyGoal ->
+                            coroutineScope.launch {
+                                withContext(Dispatchers.IO) {
+                                    module.driverSettingsRepository.updateDailyGoal(dailyGoal)
+                                }
+                                RadarLogger.i(
+                                    "KM_V2_SEEN",
+                                    "KM_V2_DRIVER_SETTINGS_DAILY_GOAL_SAVED",
+                                    "dailyGoalBrl" to dailyGoal
+                                )
+                                refreshAll()
                             }
-                            RadarLogger.i(
-                                "KM_V2_SEEN",
-                                "KM_V2_DRIVER_SETTINGS_DAILY_GOAL_SAVED",
-                                "dailyGoalBrl" to dailyGoal
-                            )
-                            refreshAll()
-                        }
-                    },
-                    onExportDebugLogs = {
+                        },
+                        onExportDebugLogs = {
                         coroutineScope.launch {
                             debugExporting = true
                             debugExportMessage = null
@@ -614,8 +649,9 @@ private fun KmOneApp(debugState: RadarDebugState) {
                                 }
                             }
                         }
-                    }
-                )
+                        }
+                    )
+                }
             }
         }
     }
@@ -773,23 +809,69 @@ private fun HomeDashboardTab(
 private fun HomeDashboardFinalTab(
     debugState: RadarDebugState,
     homeState: HomeUiState,
+    resolvedSummary: HomeDailySummary,
     seenOffers: List<SeenOffer>,
     savedRides: List<SavedRide>,
     fuelEntries: List<FuelEntry>,
-    onOpenAccessibility: () -> Unit,
-    onRequestOverlayPermission: () -> Unit,
-    onShowPiu: () -> Unit,
-    onHidePiu: () -> Unit,
-    onManualAnalyze: () -> Unit,
+    onToggleRadar: () -> Unit,
     onConfigureGoal: () -> Unit,
     onOpenSeen: () -> Unit,
     onOpenRecords: () -> Unit,
     onOpenConfig: () -> Unit
 ) {
+    val summary = resolvedSummary
     val todayFuelSpend = remember(fuelEntries) { fuelEntries.sumFuelSpentToday() }
     val todayFuelCount = remember(fuelEntries) { fuelEntries.countTodayEntries() }
-    val yesterdayDelta = remember(savedRides) { savedRides.dayOverDayEarnedDelta(homeState.summary.earnedToday) }
-    val recentActivity = remember(seenOffers, savedRides) { buildHomeRecentActivity(seenOffers, savedRides) }
+    val yesterdayDelta = remember(savedRides, summary.earnedToday) {
+        savedRides.dayOverDayEarnedDelta(summary.earnedToday)
+    }
+    val visibleSeenOffers = remember(seenOffers) { visibleHomeSeenOffers(seenOffers) }
+    val recentActivity = remember(visibleSeenOffers, savedRides) {
+        buildHomeRecentActivity(visibleSeenOffers, savedRides)
+    }
+
+    LaunchedEffect(Unit) {
+        if (ENABLE_HOME_PERF_LOGS) {
+            RadarLogger.i(
+                "KM_V2_HOME",
+                "KM_V2_HOME_PERFORMANCE_CHECK",
+                "reason" to "home_composed"
+            )
+        }
+    }
+    LaunchedEffect(summary.earnedToday, summary.dailyGoal, summary.progressFraction, savedRides) {
+        val zoneId = ZoneId.systemDefault()
+        val resolvedAtMs = System.currentTimeMillis()
+        val day = Instant.ofEpochMilli(resolvedAtMs).atZone(zoneId).toLocalDate()
+        val startOfDay = day.atStartOfDay(zoneId).toInstant().toEpochMilli()
+        val endOfDay = day.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli() - 1L
+        val todayRideCount = savedRides.count {
+            Instant.ofEpochMilli(it.acceptedAtMs).atZone(zoneId).toLocalDate() == day
+        }
+        RadarLogger.i(
+            "KM_V2_HOME",
+            "KM_V2_HOME_DAILY_TOTAL_RESOLVED",
+            "source" to "saved_rides_today",
+            "savedRideCount" to savedRides.size,
+            "todayRideCount" to todayRideCount,
+            "grossToday" to summary.earnedToday,
+            "dailyGoal" to summary.dailyGoal,
+            "progress" to summary.progressFraction,
+            "timezone" to zoneId.id,
+            "startOfDay" to startOfDay,
+            "endOfDay" to endOfDay
+        )
+    }
+    LaunchedEffect(visibleSeenOffers, recentActivity) {
+        RadarLogger.i(
+            "KM_V2_HOME",
+            "KM_V2_HOME_LAST_SEEN_OFFER_RESOLVED",
+            "source" to "seen_offers_visible_queue",
+            "seenOfferCount" to visibleSeenOffers.size,
+            "lastSeenOfferId" to visibleSeenOffers.maxByOrNull { it.createdAtMs }?.id,
+            "empty" to visibleSeenOffers.isEmpty()
+        )
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         HomeDashboardBackgroundDecor()
@@ -801,17 +883,18 @@ private fun HomeDashboardFinalTab(
             item {
                 HomeBrandHeader(
                     isServiceActive = debugState.serviceActive,
-                    seenOffersCount = homeState.summary.seenOffersCount,
+                    seenOffersCount = summary.seenOffersCount,
                     onOpenConfig = onOpenConfig
                 )
             }
             item {
                 HomeHeroCard(
-                    summary = homeState.summary,
+                    summary = summary,
                     isLoading = homeState.isLoading,
                     errorMessage = homeState.errorMessage,
                     yesterdayDelta = yesterdayDelta,
-                    onAnalyze = onManualAnalyze,
+                    isRadarVisible = debugState.piuOverlayShowing,
+                    onAnalyze = onToggleRadar,
                     onConfigureGoal = onConfigureGoal
                 )
             }
@@ -820,16 +903,16 @@ private fun HomeDashboardFinalTab(
                     HomeMetricCard(
                         modifier = Modifier.weight(1f),
                         label = "R$/km medio",
-                        value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
-                        detail = homeState.summary.totalKmToday?.let { "${formatKmCompact(it)} hoje" } ?: "Aguardando corridas",
+                        value = summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
+                        detail = summary.totalKmToday?.let { "${formatKmCompact(it)} hoje" } ?: "Aguardando corridas",
                         accent = KmOnePalette.Attention,
                         iconResId = R.drawable.ic_goal_remaining
                     )
                     HomeMetricCard(
                         modifier = Modifier.weight(1f),
                         label = "Corridas",
-                        value = homeState.summary.acceptedRidesCount.toString(),
-                        detail = "${homeState.summary.seenOffersCount} vistas hoje",
+                        value = summary.acceptedRidesCount.toString(),
+                        detail = "${summary.seenOffersCount} vistas hoje",
                         accent = KmOnePalette.Positive,
                         iconResId = R.drawable.ic_clipboard
                     )
@@ -848,9 +931,9 @@ private fun HomeDashboardFinalTab(
                     HomeMetricCard(
                         modifier = Modifier.weight(1f),
                         label = "Lucro liquido",
-                        value = formatMoney(homeState.summary.earnedToday - todayFuelSpend),
-                        detail = profitShareText(homeState.summary.earnedToday, todayFuelSpend),
-                        accent = if (homeState.summary.earnedToday - todayFuelSpend >= 0.0) KmOnePalette.Neon else KmOnePalette.Negative,
+                        value = formatMoney(summary.earnedToday - todayFuelSpend),
+                        detail = profitShareText(summary.earnedToday, todayFuelSpend),
+                        accent = if (summary.earnedToday - todayFuelSpend >= 0.0) KmOnePalette.Neon else KmOnePalette.Negative,
                         iconResId = R.drawable.ic_today_earnings
                     )
                 }
@@ -871,26 +954,16 @@ private fun HomeDashboardFinalTab(
             item {
                 AnalyzeOfferCta(
                     isServiceActive = debugState.serviceActive,
-                    onManualAnalyze = onManualAnalyze
+                    isOverlayPermissionGranted = debugState.piuOverlayPermissionGranted,
+                    isRadarVisible = debugState.piuOverlayShowing,
+                    onToggleRadar = onToggleRadar
                 )
             }
             item {
                 HomeInsightCard(
-                    summary = homeState.summary,
+                    summary = summary,
                     todayFuelSpend = todayFuelSpend
                 )
-            }
-            item {
-                CockpitCard(title = "Radar e atalhos", accent = Color(0x3327C87B)) {
-                    ActionGrid(
-                        actions = listOf(
-                            QuickAction("Acessibilidade", onOpenAccessibility),
-                            QuickAction("Permissao overlay", onRequestOverlayPermission),
-                            QuickAction("Mostrar painel", onShowPiu),
-                            QuickAction("Ocultar painel", onHidePiu)
-                        )
-                    )
-                }
             }
         }
     }
@@ -898,18 +971,19 @@ private fun HomeDashboardFinalTab(
 
 @Composable
 private fun KmOneLaunchBrandScreen() {
+    val launchBackgroundBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                KmOnePalette.BackgroundDeep,
+                KmOnePalette.Background,
+                Color(0xFF0C1E17)
+            )
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        KmOnePalette.BackgroundDeep,
-                        KmOnePalette.Background,
-                        Color(0xFF0C1E17)
-                    )
-                )
-            ),
+            .background(launchBackgroundBrush),
         contentAlignment = Alignment.Center
     ) {
         Image(
@@ -923,39 +997,42 @@ private fun KmOneLaunchBrandScreen() {
 
 @Composable
 private fun HomeDashboardBackgroundDecor() {
+    val backgroundBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF02070D),
+                Color(0xFF07111C),
+                Color(0xFF06251A),
+                Color(0xFF02070D)
+            )
+        )
+    }
+    val radarGlowBrush = remember {
+        Brush.radialGradient(
+            colors = listOf(Color(0x3300E676), Color.Transparent)
+        )
+    }
+    val sweepBrush = remember {
+        Brush.horizontalGradient(
+            colors = listOf(Color.Transparent, Color(0x1400E676), Color.Transparent)
+        )
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF02070D),
-                        Color(0xFF07111C),
-                        Color(0xFF06251A),
-                        Color(0xFF02070D)
-                    )
-                )
-            )
+            .background(backgroundBrush)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(300.dp)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0x3300E676), Color.Transparent)
-                    )
-                )
+                .background(radarGlowBrush)
         )
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
-                .background(
-                    brush = Brush.horizontalGradient(
-                        colors = listOf(Color.Transparent, Color(0x1400E676), Color.Transparent)
-                    )
-                )
+                .background(sweepBrush)
         )
     }
 }
@@ -1045,9 +1122,15 @@ private fun HomeHeroCard(
     isLoading: Boolean,
     errorMessage: String?,
     yesterdayDelta: Double?,
+    isRadarVisible: Boolean,
     onAnalyze: () -> Unit,
     onConfigureGoal: () -> Unit
 ) {
+    val heroGlowBrush = remember {
+        Brush.radialGradient(
+            colors = listOf(Color(0x3300E676), Color.Transparent)
+        )
+    }
     Surface(
         shape = RoundedCornerShape(28.dp),
         color = Color(0xD90B1624),
@@ -1058,11 +1141,7 @@ private fun HomeHeroCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(220.dp)
-                    .background(
-                        brush = Brush.radialGradient(
-                            colors = listOf(Color(0x3300E676), Color.Transparent)
-                        )
-                    )
+                    .background(brush = heroGlowBrush)
             )
             Column(
                 modifier = Modifier
@@ -1143,7 +1222,7 @@ private fun HomeHeroCard(
                             contentColor = KmOnePalette.BackgroundDeep
                         )
                     ) {
-                        Text("Analisar", fontWeight = FontWeight.Bold)
+                        Text(homeRadarActionLabel(isRadarVisible), fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = onConfigureGoal,
@@ -2696,8 +2775,19 @@ private fun SummaryMetricPanel(
 @Composable
 private fun AnalyzeOfferCta(
     isServiceActive: Boolean,
-    onManualAnalyze: () -> Unit
+    isOverlayPermissionGranted: Boolean,
+    isRadarVisible: Boolean,
+    onToggleRadar: () -> Unit
 ) {
+    val actionLabel = homeRadarActionLabel(isRadarVisible)
+    val title = actionLabel
+    val description = when {
+        !isServiceActive -> "Ative a acessibilidade do KM One para abrir o radar."
+        !isOverlayPermissionGranted -> "Permita sobreposicao para abrir o radar do KM One."
+        isRadarVisible -> "Radar visivel. Toque para ocultar o painel."
+        else -> "Abra o radar para acompanhar e analisar ofertas."
+    }
+    val actionIcon = homeRadarActionIconRes(isRadarVisible)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
@@ -2716,30 +2806,37 @@ private fun AnalyzeOfferCta(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    text = "Analisar oferta",
+                    text = title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = KmOnePalette.TextPrimary
                 )
                 Text(
-                    text = if (isServiceActive) {
-                        "Use quando quiser avaliar uma oferta manualmente."
-                    } else {
-                        "Ative o KM One para usar a leitura manual."
-                    },
+                    text = description,
                     style = MaterialTheme.typography.bodySmall,
                     color = KmOnePalette.TextSecondary
                 )
             }
             Button(
-                onClick = onManualAnalyze,
+                onClick = onToggleRadar,
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = KmOnePalette.Neon,
                     contentColor = KmOnePalette.Background
                 )
             ) {
-                Text("Analisar agora", fontWeight = FontWeight.Bold)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Image(
+                        painter = painterResource(actionIcon),
+                        contentDescription = actionLabel,
+                        modifier = Modifier.size(16.dp),
+                        colorFilter = ColorFilter.tint(KmOnePalette.Background)
+                    )
+                    Text(actionLabel, fontWeight = FontWeight.Bold)
+                }
             }
         }
     }
@@ -3722,6 +3819,13 @@ private data class HomeRecentActivity(
     val timeLabel: String
 )
 
+internal fun visibleHomeSeenOffers(seenOffers: List<SeenOffer>): List<SeenOffer> {
+    return seenOffers.filter { offer ->
+        offer.status == SeenOfferStatus.SEEN &&
+            !SeenOfferSanitizationRules.isSuspiciousForPendingQueue(offer)
+    }
+}
+
 private fun buildHomeRecentActivity(
     seenOffers: List<SeenOffer>,
     savedRides: List<SavedRide>
@@ -3807,6 +3911,14 @@ private fun profitShareText(earnedToday: Double, fuelSpendToday: Double): String
     val net = earnedToday - fuelSpendToday
     val share = (net / earnedToday) * 100.0
     return "${String.format(Locale.US, "%.0f", share.coerceAtLeast(0.0))}% do bruto"
+}
+
+internal fun homeRadarActionLabel(isRadarVisible: Boolean): String {
+    return if (isRadarVisible) "Ocultar Radar" else "Abrir Radar"
+}
+
+internal fun homeRadarActionIconRes(isRadarVisible: Boolean): Int {
+    return if (isRadarVisible) R.drawable.ic_close else R.drawable.ic_eye
 }
 
 private fun platformAccent(platform: RidePlatform): Color {
@@ -4060,7 +4172,7 @@ private fun emptyHomeSummary(): HomeDailySummary {
 private fun PreviewKmOneApp() {
     KMONEMotorTheme(dynamicColor = false) {
         KmOneApp(
-            debugState = RadarDebugState(
+            debugStateOverride = RadarDebugState(
                 serviceActive = true,
                 topDominantWindowPackage = "com.app99.driver",
                 topFloatingWindowPackage = "com.ubercab.driver",

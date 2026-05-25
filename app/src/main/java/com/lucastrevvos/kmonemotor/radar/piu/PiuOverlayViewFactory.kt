@@ -1,22 +1,23 @@
 package com.lucastrevvos.kmonemotor.radar.piu
 
+import android.content.res.ColorStateList
 import android.content.Context
 import android.graphics.Color
-import android.graphics.PixelFormat
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.widget.Button
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.TextView
+import com.lucastrevvos.kmonemotor.R
+import kotlin.math.max
 import kotlin.math.roundToInt
 
 interface PiuOverlayViewHandle {
     val platformView: Any
     val estimatedWidthPx: Int
+    val currentWidthPx: Int
     fun updateEarningsText(value: String)
     fun updateAnalyzeButton(enabled: Boolean, label: String)
     fun bindAnalyzeClick(listener: () -> Unit)
@@ -32,68 +33,70 @@ class AndroidPiuOverlayViewFactory(
 ) : PiuOverlayViewFactory {
     override fun create(initialEarningsText: String): PiuOverlayViewHandle {
         val density = context.resources.displayMetrics.density
-        val estimatedWidth = (252 * density).roundToInt()
+        val minimumContainerWidth = (92 * density).roundToInt()
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            minimumWidth = minimumContainerWidth
             setPadding(
-                (12 * density).roundToInt(),
                 (10 * density).roundToInt(),
-                (12 * density).roundToInt(),
-                (10 * density).roundToInt()
+                (8 * density).roundToInt(),
+                (10 * density).roundToInt(),
+                (8 * density).roundToInt()
             )
             background = GradientDrawable().apply {
-                cornerRadius = 24f * density
+                cornerRadius = 26f * density
                 setColor(Color.argb(236, 9, 17, 29))
-                setStroke((1 * density).roundToInt(), Color.argb(120, 91, 255, 154))
+                setStroke((1 * density).roundToInt(), Color.argb(132, 0, 230, 118))
             }
         }
-        val infoColumn = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.START
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        val labelView = TextView(context).apply {
-            text = "Total do dia"
-            setTextColor(Color.argb(210, 159, 179, 201))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        val textView = TextView(context).apply {
-            text = initialEarningsText
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        infoColumn.addView(labelView)
-        infoColumn.addView(textView)
-        val analyzeButton = Button(context).apply {
-            text = "Analisar"
-            isAllCaps = false
-            minHeight = 0
-            minimumHeight = 0
-            minWidth = 0
-            minimumWidth = 0
-            setTextColor(Color.argb(255, 7, 17, 29))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(
-                (16 * density).roundToInt(),
-                (10 * density).roundToInt(),
-                (16 * density).roundToInt(),
-                (10 * density).roundToInt()
-            )
+        val statusIndicator = View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                (8 * density).roundToInt(),
+                (8 * density).roundToInt()
+            ).apply {
+                marginEnd = (8 * density).roundToInt()
+            }
             background = GradientDrawable().apply {
-                cornerRadius = 18f * density
+                shape = GradientDrawable.OVAL
                 setColor(Color.argb(255, 91, 255, 154))
             }
         }
-        container.addView(infoColumn)
+        val analyzeButton = ImageButton(context).apply {
+            contentDescription = "Analisar"
+            minimumHeight = 0
+            minimumWidth = 0
+            layoutParams = LinearLayout.LayoutParams(
+                (44 * density).roundToInt(),
+                (44 * density).roundToInt()
+            )
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            setImageResource(R.drawable.ic_eye)
+            setImageTintList(ColorStateList.valueOf(Color.argb(255, 7, 17, 29)))
+            imageAlpha = 255
+            setPadding(
+                (10 * density).roundToInt(),
+                (10 * density).roundToInt(),
+                (10 * density).roundToInt(),
+                (10 * density).roundToInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 20f * density
+                setColor(Color.argb(255, 91, 255, 154))
+            }
+        }
+        container.contentDescription = "Radar KM One. Total do dia $initialEarningsText"
+        container.addView(statusIndicator)
         container.addView(analyzeButton)
+        container.measure(
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        val estimatedWidth = max(container.measuredWidth, minimumContainerWidth)
 
         return AndroidPiuOverlayViewHandle(
             rootView = container,
-            earningsTextView = textView,
+            statusIndicator = statusIndicator,
             analyzeButton = analyzeButton,
             estimatedWidthPx = estimatedWidth
         )
@@ -102,19 +105,23 @@ class AndroidPiuOverlayViewFactory(
 
 private class AndroidPiuOverlayViewHandle(
     private val rootView: View,
-    private val earningsTextView: TextView,
-    private val analyzeButton: Button,
+    private val statusIndicator: View,
+    private val analyzeButton: ImageButton,
     override val estimatedWidthPx: Int
 ) : PiuOverlayViewHandle {
     override val platformView: Any = rootView
+    override val currentWidthPx: Int
+        get() = rootView.width.takeIf { it > 0 } ?: estimatedWidthPx
 
     override fun updateEarningsText(value: String) {
-        earningsTextView.text = value
+        rootView.contentDescription = "Radar KM One. Total do dia $value"
     }
 
     override fun updateAnalyzeButton(enabled: Boolean, label: String) {
         analyzeButton.isEnabled = enabled
-        analyzeButton.text = label
+        analyzeButton.contentDescription = label
+        analyzeButton.alpha = if (enabled) 1f else 0.72f
+        statusIndicator.alpha = if (enabled) 1f else 0.55f
     }
 
     override fun bindAnalyzeClick(listener: () -> Unit) {

@@ -139,8 +139,63 @@ class PiuOverlayControllerTest {
         controller.show()
         factory.lastHandle?.performDragTo(180)
 
-        assertEquals(180, positionStore.savedX)
+        assertEquals(180, positionStore.savedX ?: -1)
         assertTrue(host.updatedXs.contains(180))
+    }
+
+    @Test
+    fun show_defaultsToRightEdgeUsingHandleWidth() {
+        val host = FakeOverlayWindowHost()
+        val factory = FakePiuOverlayViewFactory(handleWidthPx = 268)
+        val controller = PiuOverlayController(
+            context = context,
+            host = host,
+            viewFactory = factory,
+            positionStore = FakePiuOverlayPositionStore(initialX = null),
+            overlayPermissionChecker = { true },
+            screenWidthPxProvider = { 1080 },
+            topInsetPxProvider = { 12 },
+            defaultOverlayWidthPxProvider = { 220 },
+            manualRequestSender = { _, clickedAtMs ->
+                ManualAnalysisState.tryStart(clickedAtMs)
+                ManualAnalysisRequestResult.Sent
+            },
+            delayedActionScheduler = FakeDelayedActionScheduler(),
+            mainThreadDispatcher = FakeMainThreadDispatcher()
+        )
+
+        controller.show()
+
+        assertEquals(812, host.addedXs.single())
+    }
+
+    @Test
+    fun drag_clampsAgainstCurrentHandleWidth() {
+        val host = FakeOverlayWindowHost()
+        val factory = FakePiuOverlayViewFactory(handleWidthPx = 268)
+        val positionStore = FakePiuOverlayPositionStore(initialX = 0)
+        val controller = PiuOverlayController(
+            context = context,
+            host = host,
+            viewFactory = factory,
+            positionStore = positionStore,
+            overlayPermissionChecker = { true },
+            screenWidthPxProvider = { 1080 },
+            topInsetPxProvider = { 12 },
+            defaultOverlayWidthPxProvider = { 220 },
+            manualRequestSender = { _, clickedAtMs ->
+                ManualAnalysisState.tryStart(clickedAtMs)
+                ManualAnalysisRequestResult.Sent
+            },
+            delayedActionScheduler = FakeDelayedActionScheduler(),
+            mainThreadDispatcher = FakeMainThreadDispatcher()
+        )
+
+        controller.show()
+        factory.lastHandle?.performDragTo(2_000)
+
+        assertEquals(812, positionStore.savedX ?: -1)
+        assertTrue(host.updatedXs.contains(812))
     }
 
     @Test
@@ -342,12 +397,12 @@ class PiuOverlayControllerTest {
     }
 
     private class FakePiuOverlayPositionStore(
-        initialX: Int = 0
+        initialX: Int? = 0
     ) : PiuOverlayPositionStore {
         private var currentX = initialX
-        var savedX: Int = initialX
+        var savedX: Int? = initialX
 
-        override fun restoreX(defaultValue: Int): Int = currentX
+        override fun restoreX(defaultValue: Int): Int = currentX ?: defaultValue
 
         override fun saveX(value: Int) {
             currentX = value
@@ -355,17 +410,22 @@ class PiuOverlayControllerTest {
         }
     }
 
-    private class FakePiuOverlayViewFactory : PiuOverlayViewFactory {
+    private class FakePiuOverlayViewFactory(
+        private val handleWidthPx: Int = 220
+    ) : PiuOverlayViewFactory {
         var lastHandle: FakePiuOverlayViewHandle? = null
 
         override fun create(initialEarningsText: String): PiuOverlayViewHandle {
-            return FakePiuOverlayViewHandle().also { lastHandle = it }
+            return FakePiuOverlayViewHandle(handleWidthPx).also { lastHandle = it }
         }
     }
 
-    private class FakePiuOverlayViewHandle : PiuOverlayViewHandle {
+    private class FakePiuOverlayViewHandle(
+        private val handleWidthPx: Int
+    ) : PiuOverlayViewHandle {
         override val platformView: Any = Any()
-        override val estimatedWidthPx: Int = 220
+        override val estimatedWidthPx: Int = handleWidthPx
+        override val currentWidthPx: Int = handleWidthPx
         private var analyzeListener: (() -> Unit)? = null
         private var dragListener: ((Int) -> Unit)? = null
         var analyzeEnabled: Boolean = true
@@ -402,10 +462,12 @@ class PiuOverlayControllerTest {
     private class FakeOverlayWindowHost : OverlayWindowHost {
         var addCount = 0
         var removeCount = 0
+        val addedXs = mutableListOf<Int>()
         val updatedXs = mutableListOf<Int>()
 
         override fun add(handle: PiuOverlayViewHandle, params: WindowManager.LayoutParams) {
             addCount += 1
+            addedXs += params.x
         }
 
         override fun update(handle: PiuOverlayViewHandle, params: WindowManager.LayoutParams) {

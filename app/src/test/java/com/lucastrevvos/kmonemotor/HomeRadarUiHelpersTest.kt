@@ -1,0 +1,69 @@
+package com.lucastrevvos.kmonemotor
+
+import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class HomeRadarUiHelpersTest {
+    @Test
+    fun radarHidden_usesAbrirRadarLabel() {
+        assertEquals("Abrir Radar", homeRadarActionLabel(isRadarVisible = false))
+    }
+
+    @Test
+    fun radarVisible_usesOcultarRadarLabel() {
+        assertEquals("Ocultar Radar", homeRadarActionLabel(isRadarVisible = true))
+    }
+
+    @Test
+    fun visibleHomeSeenOffers_excludesIgnoredOffers() {
+        val visible = visibleHomeSeenOffers(
+            listOf(
+                seenOffer(id = "seen", status = SeenOfferStatus.SEEN, createdAtMs = 2_000L),
+                seenOffer(id = "ignored", status = SeenOfferStatus.IGNORED, createdAtMs = 3_000L)
+            )
+        )
+
+        assertEquals(listOf("seen"), visible.map { it.id })
+    }
+
+    @Test
+    fun visibleHomeSeenOffers_returnsEmptyWhenOnlyIgnoredOffersRemain() {
+        val visible = visibleHomeSeenOffers(
+            listOf(seenOffer(id = "ignored", status = SeenOfferStatus.IGNORED, createdAtMs = 3_000L))
+        )
+
+        assertEquals(emptyList<String>(), visible.map { it.id })
+    }
+
+    private fun seenOffer(
+        id: String,
+        status: SeenOfferStatus,
+        createdAtMs: Long
+    ) = SeenOffer(
+        id = id,
+        observationId = "obs-$id",
+        platform = RidePlatform.UBER,
+        sourceTrigger = "test",
+        status = status,
+        price = 31.76,
+        valuePerKm = 2.4,
+        pickupDistanceKm = 1.0,
+        pickupTimeMin = 4.0,
+        tripDistanceKm = 6.0,
+        tripTimeMin = 12.0,
+        totalDistanceKm = 7.0,
+        estimatedTotalTimeMin = 16.0,
+        productName = "UberX",
+        originPreview = "Origem",
+        destinationPreview = "Destino",
+        rawTextPreview = "UberX",
+        score = 1,
+        rawTextHash = null,
+        routeTextHash = null,
+        createdAtMs = createdAtMs,
+        updatedAtMs = createdAtMs
+    )
+}

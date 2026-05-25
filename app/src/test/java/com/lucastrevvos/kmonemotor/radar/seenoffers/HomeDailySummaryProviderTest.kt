@@ -89,6 +89,54 @@ class HomeDailySummaryProviderTest {
     }
 
     @Test
+    fun earnedToday_usesOnlySavedRidesFromToday() {
+        val provider = provider(goal = 150.0)
+        val yesterdayMs = nowMs - (24 * 60 * 60 * 1000L)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = listOf(
+                savedRide("ride-today-1", price = 20.0, totalDistanceKm = 6.0, acceptedAtMs = nowMs),
+                savedRide("ride-today-2", price = 30.0, totalDistanceKm = 9.0, acceptedAtMs = nowMs),
+                savedRide("ride-yesterday", price = 100.0, totalDistanceKm = 25.0, acceptedAtMs = yesterdayMs)
+            ),
+            nowMs = nowMs
+        )
+
+        assertEquals(50.0, summary.earnedToday, 0.001)
+        assertEquals(2, summary.acceptedRidesCount)
+    }
+
+    @Test
+    fun earnedToday_keepsSingleRideValueForToday() {
+        val provider = provider(goal = 150.0)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = listOf(savedRide("ride-today", price = 31.76, totalDistanceKm = 12.0, acceptedAtMs = nowMs)),
+            nowMs = nowMs
+        )
+
+        assertEquals(31.76, summary.earnedToday, 0.001)
+        assertEquals(1, summary.acceptedRidesCount)
+    }
+
+    @Test
+    fun progressFraction_clampsAtOneWhenGoalIsExceeded() {
+        val provider = provider(goal = 300.0)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = listOf(savedRide("ride-1", price = 350.0, totalDistanceKm = 80.0, acceptedAtMs = nowMs)),
+            nowMs = nowMs
+        )
+
+        assertEquals(1.0f, summary.progressFraction, 0.001f)
+        assertEquals(0.0, summary.remainingToGoal ?: -1.0, 0.001)
+        assertTrue(summary.isGoalReached)
+    }
+
+    @Test
     fun configuredGoal_takesPrecedenceOverFallback() {
         val provider = HomeDailySummaryProvider(
             seenOfferRepository = emptySeenRepo(),

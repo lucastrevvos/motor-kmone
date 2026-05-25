@@ -66,7 +66,7 @@ class PiuOverlayController(
     private val overlayPermissionChecker: () -> Boolean = { Settings.canDrawOverlays(context) },
     private val screenWidthPxProvider: () -> Int = { context.resources.displayMetrics.widthPixels },
     private val topInsetPxProvider: () -> Int = { 12.dpToPx(context) },
-    private val defaultOverlayWidthPxProvider: () -> Int = { 220.dpToPx(context) },
+    private val defaultOverlayWidthPxProvider: () -> Int = { 92.dpToPx(context) },
     private val manualRequestSender: (String, Long) -> ManualAnalysisRequestResult = { source, clickedAtMs ->
         ManualAnalysisRequestBus.requestAnalysisDetailed(
             source = source,
@@ -279,8 +279,11 @@ class PiuOverlayController(
         runOnMain("horizontal_drag") {
             val handle = viewHandle ?: return@runOnMain
             val params = layoutParams ?: return@runOnMain
-            val maxX = (screenWidthPxProvider() - handle.estimatedWidthPx).coerceAtLeast(0)
-            val clampedX = targetX.coerceIn(0, maxX)
+            val clampedX = clampOverlayX(
+                targetX = targetX,
+                screenWidthPx = screenWidthPxProvider(),
+                overlayWidthPx = handle.currentWidthPx
+            )
             params.x = clampedX
             try {
                 host.update(handle, params)
@@ -333,7 +336,11 @@ class PiuOverlayController(
     }
 
     private fun defaultX(): Int {
-        return (screenWidthPxProvider() - defaultOverlayWidthPxProvider()).coerceAtLeast(0) / 2
+        val overlayWidthPx = viewHandle?.currentWidthPx ?: defaultOverlayWidthPxProvider()
+        return defaultOverlayX(
+            screenWidthPx = screenWidthPxProvider(),
+            overlayWidthPx = overlayWidthPx
+        )
     }
 
     private fun topInsetPx(): Int = topInsetPxProvider()
@@ -461,6 +468,25 @@ class PiuOverlayController(
             throw throwable
         }
     }
+}
+
+internal fun defaultOverlayX(
+    screenWidthPx: Int,
+    overlayWidthPx: Int
+): Int {
+    return (screenWidthPx - overlayWidthPx).coerceAtLeast(0)
+}
+
+internal fun clampOverlayX(
+    targetX: Int,
+    screenWidthPx: Int,
+    overlayWidthPx: Int
+): Int {
+    val maxX = defaultOverlayX(
+        screenWidthPx = screenWidthPx,
+        overlayWidthPx = overlayWidthPx
+    )
+    return targetX.coerceIn(0, maxX)
 }
 
 private class AndroidDelayedActionScheduler : DelayedActionScheduler {
