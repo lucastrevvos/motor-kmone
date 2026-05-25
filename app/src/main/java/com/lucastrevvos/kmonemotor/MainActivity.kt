@@ -1619,10 +1619,14 @@ private fun SeenOfferCollapsedContent(
                     background = Color(0x1F5AA8FF),
                     textColor = KmOnePalette.ElectricBlue
                 )
+                SeenOfferSourceBadge(uiModel.sourceBadgeLabel)
+                SeenOfferDecisionBadge(uiModel.decisionBadgeLabel)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(
                     text = uiModel.valuePerKmLabel,
                     background = Color(0x1AFFFFFF),
-                    textColor = if (uiModel.valuePerKmLabel != "R$/km —") KmOnePalette.Neon else KmOnePalette.TextSecondary
+                    textColor = if (uiModel.valuePerKmLabel != "R$/km -") KmOnePalette.Neon else KmOnePalette.TextSecondary
                 )
             }
             Text(
@@ -1630,6 +1634,11 @@ private fun SeenOfferCollapsedContent(
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = KmOnePalette.TextPrimary
+            )
+            Text(
+                text = uiModel.collapsedSummaryLabel,
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
             )
         }
         Column(
@@ -1642,7 +1651,7 @@ private fun SeenOfferCollapsedContent(
                 color = KmOnePalette.TextSecondary
             )
             Text(
-                text = if (expanded) "Ocultar" else "Detalhes",
+                text = if (expanded) "Fechar" else "Detalhes",
                 style = MaterialTheme.typography.bodySmall,
                 color = KmOnePalette.Neon,
                 fontWeight = FontWeight.SemiBold
@@ -1661,23 +1670,12 @@ private fun SeenOfferExpandedContent(
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
         uiModel.productName?.let { DetailLine("Produto", it) }
-        DetailLine("R$/km", resolvedSeenOfferValuePerKm(offer)?.let(::formatPerKm) ?: "—")
-        DetailLine("Origem", offer.originPreview ?: "—")
-        DetailLine("Destino", offer.destinationPreview ?: "—")
-        MetricsRow(
-            title = "Busca",
-            time = offer.pickupTimeMin,
-            distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).pickupDistanceKm)
-        )
-        MetricsRow(
-            title = "Viagem",
-            time = offer.tripTimeMin,
-            distance = normalizedDistanceForDisplay(resolvedSeenOfferEconomics(offer).tripDistanceKm)
-        )
-        DetailLine(
-            "Total",
-            normalizedDistanceForDisplay(resolvedSeenOfferDistanceKm(offer))?.let(::formatKm) ?: "—"
-        )
+        DetailLine("R$/km", if (uiModel.valuePerKmLabel == "R$/km -") "-" else uiModel.valuePerKmLabel)
+        DetailLine("Origem", uiModel.originLabel)
+        DetailLine("Destino", uiModel.destinationLabel)
+        DetailLine("Busca", uiModel.pickupLabel)
+        DetailLine("Viagem", uiModel.tripLabel)
+        DetailLine("Total", uiModel.totalDistanceLabel)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = onSave,
@@ -1701,6 +1699,37 @@ private fun SeenOfferExpandedContent(
             }
         }
     }
+}
+
+
+
+@Composable
+private fun SeenOfferSourceBadge(label: String) {
+    val (background, textColor) = when (label) {
+        "MANUAL" -> Color(0x2A7D93A8) to Color(0xFFE2E8F0)
+        "RETRY" -> Color(0x2A5AA8FF) to KmOnePalette.ElectricBlue
+        else -> Color(0x1F27C87B) to KmOnePalette.Neon
+    }
+    StatusChip(
+        text = label,
+        background = background,
+        textColor = textColor
+    )
+}
+
+@Composable
+private fun SeenOfferDecisionBadge(label: String) {
+    val (background, textColor) = when (label) {
+        "BOA" -> Color(0x1F27C87B) to KmOnePalette.Positive
+        "ATEN\u00C7\u00C3O" -> Color(0x1FFFC857) to KmOnePalette.Attention
+        "RUIM" -> Color(0x1FFF6F7D) to KmOnePalette.Negative
+        else -> Color(0x2A7D93A8) to KmOnePalette.TextSecondary
+    }
+    StatusChip(
+        text = label,
+        background = background,
+        textColor = textColor
+    )
 }
 
 @Composable

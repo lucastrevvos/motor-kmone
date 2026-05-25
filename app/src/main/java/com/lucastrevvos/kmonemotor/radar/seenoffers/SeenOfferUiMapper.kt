@@ -1,6 +1,7 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
+import com.lucastrevvos.kmonemotor.radar.decision.EconomicDecisionConfig
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -12,28 +13,24 @@ data class SeenOfferUiModel(
     val priceLabel: String,
     val timeLabel: String,
     val valuePerKmLabel: String,
+    val sourceBadgeLabel: String,
+    val decisionBadgeLabel: String,
     val pickupLabel: String,
     val tripLabel: String,
     val totalDistanceLabel: String,
-    val originPreview: String?,
-    val destinationPreview: String?,
+    val collapsedSummaryLabel: String,
+    val originLabel: String,
+    val destinationLabel: String,
     val warnings: List<String>
 )
 
 class SeenOfferUiMapper(
-    private val auditor: SeenOfferConsistencyAuditor = SeenOfferConsistencyAuditor()
+    private val auditor: SeenOfferConsistencyAuditor = SeenOfferConsistencyAuditor(),
+    private val decisionConfig: EconomicDecisionConfig = EconomicDecisionConfig()
 ) {
     fun map(offer: SeenOffer): SeenOfferUiModel {
         val audit = auditor.audit(offer)
         val normalized = audit.normalizedOffer
-        val economics = RideEconomicsCalculator.resolveRideEconomics(
-            platform = normalized.platform,
-            price = normalized.price,
-            explicitValuePerKm = normalized.valuePerKm,
-            totalDistanceKm = normalized.totalDistanceKm,
-            pickupDistanceKm = normalized.pickupDistanceKm,
-            tripDistanceKm = normalized.tripDistanceKm
-        )
 
         RadarLogger.i(
             "KM_V2_SEEN",
@@ -43,8 +40,8 @@ class SeenOfferUiMapper(
             "pickupDistanceKm" to normalized.pickupDistanceKm,
             "tripDistanceKm" to normalized.tripDistanceKm,
             "rawTotalDistanceKm" to offer.totalDistanceKm,
-            "resolvedKm" to economics.totalDistanceKm,
-            "displayedValuePerKm" to economics.valuePerKm
+            "resolvedKm" to normalized.totalDistanceKm,
+            "displayedValuePerKm" to normalized.valuePerKm
         )
 
         return SeenOfferUiModel(
@@ -55,12 +52,15 @@ class SeenOfferUiMapper(
             },
             priceLabel = formatMoney(normalized.price),
             timeLabel = formatTime(normalized.createdAtMs),
-            valuePerKmLabel = economics.valuePerKm?.let(::formatPerKm) ?: "R$/km —",
-            pickupLabel = formatMetric(normalized.pickupTimeMin, economics.pickupDistanceKm),
-            tripLabel = formatMetric(normalized.tripTimeMin, economics.tripDistanceKm),
-            totalDistanceLabel = economics.totalDistanceKm?.let(::formatKm) ?: "—",
-            originPreview = normalized.originPreview ?: "—",
-            destinationPreview = normalized.destinationPreview ?: "—",
+            valuePerKmLabel = normalized.valuePerKm?.let(::formatPerKm) ?: "R$/km -",
+            sourceBadgeLabel = sourceBadge(normalized.sourceTrigger),
+            decisionBadgeLabel = decisionBadge(normalized),
+            pickupLabel = formatMetric(normalized.pickupTimeMin, normalized.pickupDistanceKm),
+            tripLabel = formatMetric(normalized.tripTimeMin, normalized.tripDistanceKm),
+            totalDistanceLabel = normalized.totalDistanceKm?.let(::formatKm) ?: "-",
+            collapsedSummaryLabel = collapsedSummary(normalized),
+            originLabel = normalized.originPreview?.takeUnless(String::isBlank) ?: "N\u00E3o identificada",
+            destinationLabel = normalized.destinationPreview?.takeUnless(String::isBlank) ?: "N\u00E3o identificado",
             warnings = audit.warnings
         )
     }
@@ -78,7 +78,7 @@ class SeenOfferUiMapper(
             timeMin?.let { "${it.toInt()} min" },
             distanceKm?.takeIf { it > 0.0 }?.let(::formatKm)
         )
-        return parts.joinToString(" • ").ifBlank { "—" }
+        return parts.joinToString(" \u2022 ").ifBlank { "-" }
     }
 
     private fun formatMoney(value: Double?): String {
@@ -94,5 +94,39 @@ class SeenOfferUiMapper(
 
     private fun formatTime(timestampMs: Long): String {
         return SimpleDateFormat("HH:mm", Locale.forLanguageTag("pt-BR")).format(Date(timestampMs))
+    }
+
+    private fun collapsedSummary(offer: SeenOffer): String {
+        val parts = buildList {
+            offer.totalDistanceKm?.let { add("${formatKm(it)} total") }
+            offer.pickupTimeMin?.let { add("${it.toInt()} min busca") }
+            offer.tripTimeMin?.let { add("${it.toInt()} min viagem") }
+        }
+        return parts.joinToString(" \u2022 ").ifBlank {
+            offer.totalDistanceKm?.let { "${formatKm(it)} total" } ?: "Dados parciais"
+        }
+    }
+
+    private fun sourceBadge(sourceTrigger: String): String {
+        val normalized = sourceTrigger.trim().uppercase(Locale.US)
+        return when {
+            normalized == "MANUAL_SCREEN_ANALYSIS" || normalized == "MANUAL_DEBUG" -> "MANUAL"
+            normalized.contains("RECOVERY") || normalized.contains("RETRY") -> "RETRY"
+            else -> "AUTO"
+        }
+    }
+
+    private fun decisionBadge(offer: SeenOffer): String {
+        val metric = when {
+            offer.totalDistanceKm != null && offer.totalDistanceKm > 0.0 && offer.price != null ->
+                offer.valuePerKm ?: (offer.price / offer.totalDistanceKm)
+            else -> offer.valuePerKm
+        }
+        return when {
+            offer.price == null || metric == null -> "INCOMPLETA"
+            metric >= decisionConfig.goodGrossPerKm -> "BOA"
+            metric >= decisionConfig.minAcceptableGrossPerKm -> "ATEN\u00C7\u00C3O"
+            else -> "RUIM"
+        }
     }
 }
