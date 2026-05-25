@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.KMONEMotor" parent="android:Theme.Material.Light.NoActionBar" />
+    <style name="Theme.KMONEMotor" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/kmone_background_deep</item>
+    </style>
+
+    <style name="Theme.KMONEMotor.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/kmone_background_deep</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/kmone_splash_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.KMONEMotor</item>
+    </style>
 </resources>

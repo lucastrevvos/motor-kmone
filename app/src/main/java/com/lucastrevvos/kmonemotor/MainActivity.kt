@@ -7,9 +7,11 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +59,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +98,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiModel
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffersUiState
 import com.lucastrevvos.kmonemotor.ui.theme.KMONEMotorTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -103,6 +107,7 @@ import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
@@ -197,6 +202,7 @@ private fun KmOneApp(debugState: RadarDebugState) {
     var driverSettings by remember { mutableStateOf(DriverSettings()) }
     var debugExporting by remember { mutableStateOf(false) }
     var debugExportMessage by remember { mutableStateOf<String?>(null) }
+    var showLaunchBrand by remember { mutableStateOf(true) }
 
     suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
@@ -287,6 +293,16 @@ private fun KmOneApp(debugState: RadarDebugState) {
         if (selectedTab == AppTab.HOME) {
             refreshAll()
         }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(1000L)
+        showLaunchBrand = false
+    }
+
+    if (showLaunchBrand) {
+        KmOneLaunchBrandScreen()
+        return
     }
 
     Scaffold(
@@ -756,6 +772,9 @@ private fun HomeDashboardFinalTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
+            HomeBrandHeader()
+        }
+        item {
             DailyGoalCard(
                 summary = homeState.summary,
                 isLoading = homeState.isLoading,
@@ -807,6 +826,58 @@ private fun HomeDashboardFinalTab(
                     )
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun KmOneLaunchBrandScreen() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        KmOnePalette.BackgroundDeep,
+                        KmOnePalette.Background,
+                        Color(0xFF0C1E17)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.kmone_splash_brand),
+            contentDescription = "KM One",
+            modifier = Modifier.fillMaxHeight(),
+            contentScale = ContentScale.Fit
+        )
+    }
+}
+
+@Composable
+private fun HomeBrandHeader() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = Color.Transparent
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            StatusChip(
+                text = "KM One",
+                background = Color(0x1F5BFF9A),
+                textColor = KmOnePalette.Neon
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Image(
+                painter = painterResource(id = R.drawable.kmone_logo_full),
+                contentDescription = "Marca KM One",
+                modifier = Modifier.height(30.dp),
+                contentScale = ContentScale.Fit
+            )
         }
     }
 }
