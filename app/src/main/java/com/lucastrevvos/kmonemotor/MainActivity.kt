@@ -3,6 +3,7 @@ package com.lucastrevvos.kmonemotor
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -224,15 +225,12 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     var debugExporting by remember { mutableStateOf(false) }
     var debugExportMessage by remember { mutableStateOf<String?>(null) }
     var showLaunchBrand by remember { mutableStateOf(true) }
-    val liveHomeSummary = remember(seenState.offers, savedRides, driverSettings.dailyGoalBrl) {
-        homeSummaryProvider.summarize(
-            seenOffers = seenState.offers,
-            savedRides = savedRides
-        )
-    }
+    var didInitialRefresh by remember { mutableStateOf(false) }
+    val liveHomeSummary = homeState.summary
 
     suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
+        val startedAt = SystemClock.elapsedRealtime()
         return runCatching {
             withContext(Dispatchers.IO) {
                 module.seenOfferRepository.listSeenOffers(limit = 500)
@@ -241,6 +239,14 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
             seenState = SeenOffersUiState(offers = offers, isLoading = false, errorMessage = null)
         }.onFailure { error ->
             seenState = SeenOffersUiState(isLoading = false, errorMessage = error.message ?: "Falha ao carregar ofertas")
+        }.also {
+            RadarLogger.i(
+                "KM_V2_PERF",
+                "KM_V2_PERF_RELOAD_SEEN_OFFERS_DURATION",
+                "durationMs" to (SystemClock.elapsedRealtime() - startedAt),
+                "count" to seenState.offers.size,
+                "success" to it.isSuccess
+            )
         }.getOrElse {
             emptyList()
         }
@@ -249,6 +255,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     suspend fun reloadSavedRides(): List<SavedRide> {
         ridesLoading = true
         ridesError = null
+        val startedAt = SystemClock.elapsedRealtime()
         return runCatching {
             withContext(Dispatchers.IO) {
                 module.savedRideRepository.listSavedRides(limit = 500)
@@ -260,6 +267,14 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
             savedRides = emptyList()
             ridesLoading = false
             ridesError = error.message ?: "Falha ao carregar registros"
+        }.also {
+            RadarLogger.i(
+                "KM_V2_PERF",
+                "KM_V2_PERF_RELOAD_SAVED_RIDES_DURATION",
+                "durationMs" to (SystemClock.elapsedRealtime() - startedAt),
+                "count" to savedRides.size,
+                "success" to it.isSuccess
+            )
         }.getOrElse {
             emptyList()
         }
@@ -289,19 +304,29 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
 
     fun refreshAll(onComplete: ((seenOfferCount: Int, savedRideCount: Int) -> Unit)? = null) {
         coroutineScope.launch {
+            val startedAt = SystemClock.elapsedRealtime()
             homeState = homeState.copy(isLoading = true, errorMessage = null)
             reloadDriverSettings()
             val offers = reloadSeenOffers()
             val rides = reloadSavedRides()
             reloadFuelEntries()
-            val summary = homeSummaryProvider.summarize(
-                seenOffers = offers,
-                savedRides = rides
-            )
+            val summary = withContext(Dispatchers.Default) {
+                homeSummaryProvider.summarize(
+                    seenOffers = offers,
+                    savedRides = rides
+                )
+            }
             homeState = HomeUiState(
                 summary = summary,
                 isLoading = false,
                 errorMessage = seenState.errorMessage ?: ridesError
+            )
+            RadarLogger.i(
+                "KM_V2_PERF",
+                "KM_V2_PERF_REFRESH_ALL_DURATION",
+                "durationMs" to (SystemClock.elapsedRealtime() - startedAt),
+                "seenOfferCount" to offers.size,
+                "savedRideCount" to rides.size
             )
             onComplete?.invoke(offers.size, rides.size)
         }
@@ -315,10 +340,11 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
             x = RadarDebugStore.state.value.piuLastX
         )
         refreshAll()
+        didInitialRefresh = true
     }
 
     LaunchedEffect(selectedTab) {
-        if (selectedTab == AppTab.HOME) {
+        if (didInitialRefresh && selectedTab == AppTab.HOME) {
             refreshAll()
         }
     }

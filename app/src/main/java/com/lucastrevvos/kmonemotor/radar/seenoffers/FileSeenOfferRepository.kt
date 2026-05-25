@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import android.os.Looper
 import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import java.io.File
 import java.util.Base64
@@ -11,10 +12,14 @@ class FileSeenOfferRepository(
     private val lock = Any()
 
     override fun saveSeenOffer(offer: SeenOffer): SeenOfferSaveResult = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("saveSeenOffer")
         val offers = loadOffers().toMutableList()
         val existing = offers.firstOrNull { it.observationId == offer.observationId }
         if (existing != null) {
-            return SeenOfferSaveResult(false, existing, "existing_observation_already_saved")
+            return SeenOfferSaveResult(false, existing, "existing_observation_already_saved").also {
+                logDuration("saveSeenOffer", startedAt)
+            }
         }
         val duplicate = offers
             .asReversed()
@@ -81,7 +86,9 @@ class FileSeenOfferRepository(
                         "incomingValuePerKm" to offer.valuePerKm
                     )
                 }
-                return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved")
+                return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved").also {
+                    logDuration("saveSeenOffer", startedAt)
+                }
             }
             if (mergePolicy.isPartialEconomicsDowngrade(existing = duplicate, candidate = offer)) {
                 RadarLogger.i(
@@ -97,7 +104,9 @@ class FileSeenOfferRepository(
                     "candidateHasTrip" to (offer.tripDistanceKm != null),
                     "reason" to "existing_complete_candidate_partial"
                 )
-                return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved")
+                return SeenOfferSaveResult(false, duplicate, "weaker_duplicate_offer_recently_saved").also {
+                    logDuration("saveSeenOffer", startedAt)
+                }
             }
             if (newQuality > existingQuality) {
                 val merged = mergePolicy.mergeBetter(duplicate, offer)
@@ -116,7 +125,9 @@ class FileSeenOfferRepository(
                     "newQuality" to newQuality,
                     "reason" to if (manualAuthority) "manual_recent_authority" else "quality_better_version"
                 )
-                return SeenOfferSaveResult(true, merged, reason)
+                return SeenOfferSaveResult(true, merged, reason).also {
+                    logDuration("saveSeenOffer", startedAt)
+                }
             }
             val reason = if (manualAuthority) {
                 "manual_recent_authority_weaker_auto_ignored"
@@ -131,37 +142,61 @@ class FileSeenOfferRepository(
                 "newQuality" to newQuality,
                 "reason" to if (manualAuthority) "manual_recent_authority" else "weaker_duplicate_offer_recently_saved"
             )
-            return SeenOfferSaveResult(false, duplicate, reason)
+            return SeenOfferSaveResult(false, duplicate, reason).also {
+                logDuration("saveSeenOffer", startedAt)
+            }
         }
         offers += offer
         persistOffers(offers)
-        return SeenOfferSaveResult(true, offer, "saved")
+        return SeenOfferSaveResult(true, offer, "saved").also {
+            logDuration("saveSeenOffer", startedAt)
+        }
     }
 
     override fun listSeenOffers(limit: Int): List<SeenOffer> = synchronized(lock) {
-        loadOffers().sortedByDescending { it.createdAtMs }.take(limit)
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("listSeenOffers")
+        loadOffers().sortedByDescending { it.createdAtMs }.take(limit).also {
+            logDuration("listSeenOffers", startedAt, "count" to it.size, "limit" to limit)
+        }
     }
 
     override fun getSeenOfferById(id: String): SeenOffer? = synchronized(lock) {
-        loadOffers().firstOrNull { it.id == id }
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("getSeenOfferById")
+        loadOffers().firstOrNull { it.id == id }.also {
+            logDuration("getSeenOfferById", startedAt, "found" to (it != null))
+        }
     }
 
     override fun updateSeenOffer(offer: SeenOffer): SeenOffer? = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("updateSeenOffer")
         val offers = loadOffers().toMutableList()
         val index = offers.indexOfFirst { it.id == offer.id }
-        if (index == -1) return null
+        if (index == -1) return null.also {
+            logDuration("updateSeenOffer", startedAt, "updated" to false)
+        }
         offers[index] = offer
         persistOffers(offers)
-        offer
+        offer.also {
+            logDuration("updateSeenOffer", startedAt, "updated" to true)
+        }
     }
 
     override fun updateSeenOfferStatus(id: String, status: SeenOfferStatus): SeenOffer? = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("updateSeenOfferStatus")
         val offers = loadOffers().toMutableList()
-        val existing = offers.firstOrNull { it.id == id } ?: return null
+        val existing = offers.firstOrNull { it.id == id } ?: return null.also {
+            logDuration("updateSeenOfferStatus", startedAt, "updated" to false)
+        }
         val updated = existing.copy(status = status, updatedAtMs = System.currentTimeMillis())
         offers.replaceAll { current -> if (current.id == id) updated else current }
         persistOffers(offers)
-        updated
+        updated.also {
+            logDuration("updateSeenOfferStatus", startedAt, "updated" to true, "status" to status.name)
+        }
     }
 
     private fun loadOffers(): List<SeenOffer> {
@@ -251,5 +286,37 @@ class FileSeenOfferRepository(
 
     private fun decodeInt(value: String): Int? {
         return decodeNullable(value)?.toIntOrNull()
+    }
+
+    private fun logDuration(operation: String, startedAt: Long, vararg extras: Pair<String, Any?>) {
+        RadarLogger.i(
+            "KM_V2_PERF",
+            "KM_V2_PERF_FILE_SEEN_OFFER_REPOSITORY_OPERATION",
+            *arrayOf(
+                "operation" to operation,
+                "durationMs" to elapsedDurationMs(startedAt),
+                *extras
+            )
+        )
+    }
+
+    private fun logMainThreadIoIfNeeded(operation: String) {
+        if (isMainThreadSafe()) {
+            RadarLogger.w(
+                "KM_V2_PERF",
+                "KM_V2_PERF_MAIN_THREAD_IO_DETECTED",
+                "repository" to "FileSeenOfferRepository",
+                "operation" to operation
+            )
+        }
+    }
+
+    private fun elapsedDurationMs(startedAtNanos: Long): Long {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L
+    }
+
+    private fun isMainThreadSafe(): Boolean {
+        return runCatching { Looper.myLooper() == Looper.getMainLooper() }
+            .getOrDefault(Thread.currentThread().name == "main")
     }
 }

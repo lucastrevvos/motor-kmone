@@ -1,5 +1,7 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import android.os.Looper
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import java.io.File
 import java.util.Base64
 
@@ -9,35 +11,55 @@ class FileSavedRideRepository(
     private val lock = Any()
 
     override fun saveRide(ride: SavedRide): SavedRide = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("saveRide")
         val rides = loadRides().toMutableList()
         rides += ride
         persistRides(rides)
-        ride
+        ride.also {
+            logDuration("saveRide", startedAt, "count" to rides.size)
+        }
     }
 
     override fun listSavedRides(limit: Int): List<SavedRide> = synchronized(lock) {
-        loadRides().sortedByDescending { it.createdAtMs }.take(limit)
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("listSavedRides")
+        loadRides().sortedByDescending { it.createdAtMs }.take(limit).also {
+            logDuration("listSavedRides", startedAt, "count" to it.size, "limit" to limit)
+        }
     }
 
     override fun updateRide(ride: SavedRide): SavedRide? = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("updateRide")
         val rides = loadRides().toMutableList()
         val index = rides.indexOfFirst { it.id == ride.id }
         if (index == -1) {
-            return null
+            return null.also {
+                logDuration("updateRide", startedAt, "updated" to false)
+            }
         }
         rides[index] = ride
         persistRides(rides)
-        ride
+        ride.also {
+            logDuration("updateRide", startedAt, "updated" to true)
+        }
     }
 
     override fun deleteRide(id: String): Boolean = synchronized(lock) {
+        val startedAt = System.nanoTime()
+        logMainThreadIoIfNeeded("deleteRide")
         val rides = loadRides()
         val filtered = rides.filterNot { it.id == id }
         if (filtered.size == rides.size) {
-            return false
+            return false.also {
+                logDuration("deleteRide", startedAt, "deleted" to false)
+            }
         }
         persistRides(filtered)
-        true
+        true.also {
+            logDuration("deleteRide", startedAt, "deleted" to true, "remaining" to filtered.size)
+        }
     }
 
     private fun loadRides(): List<SavedRide> {
@@ -116,5 +138,37 @@ class FileSavedRideRepository(
 
     private fun decodeDouble(value: String): Double? {
         return decodeNullable(value)?.toDoubleOrNull()
+    }
+
+    private fun logDuration(operation: String, startedAt: Long, vararg extras: Pair<String, Any?>) {
+        RadarLogger.i(
+            "KM_V2_PERF",
+            "KM_V2_PERF_FILE_SAVED_RIDE_REPOSITORY_OPERATION",
+            *arrayOf(
+                "operation" to operation,
+                "durationMs" to elapsedDurationMs(startedAt),
+                *extras
+            )
+        )
+    }
+
+    private fun logMainThreadIoIfNeeded(operation: String) {
+        if (isMainThreadSafe()) {
+            RadarLogger.w(
+                "KM_V2_PERF",
+                "KM_V2_PERF_MAIN_THREAD_IO_DETECTED",
+                "repository" to "FileSavedRideRepository",
+                "operation" to operation
+            )
+        }
+    }
+
+    private fun elapsedDurationMs(startedAtNanos: Long): Long {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L
+    }
+
+    private fun isMainThreadSafe(): Boolean {
+        return runCatching { Looper.myLooper() == Looper.getMainLooper() }
+            .getOrDefault(Thread.currentThread().name == "main")
     }
 }

@@ -30,7 +30,11 @@ object RadarLogger {
         } catch (_: RuntimeException) {
             println("$level/$area: $message")
         }
-        DebugEventLogStore.append(level = level, area = area, message = message)
+        try {
+            DebugEventLogStore.append(level = level, area = area, message = message)
+        } catch (_: RuntimeException) {
+            println("$level/$area: $message")
+        }
     }
 
     private fun buildMessage(event: String, keyValues: Array<out Pair<String, Any?>>): String {

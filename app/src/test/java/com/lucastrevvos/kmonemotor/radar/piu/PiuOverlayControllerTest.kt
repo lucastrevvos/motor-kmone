@@ -119,6 +119,7 @@ class PiuOverlayControllerTest {
         val host = FakeOverlayWindowHost()
         val factory = FakePiuOverlayViewFactory()
         val positionStore = FakePiuOverlayPositionStore(initialX = 50)
+        val scheduler = FakeDelayedActionScheduler()
         val controller = PiuOverlayController(
             context = context,
             host = host,
@@ -132,12 +133,13 @@ class PiuOverlayControllerTest {
                 ManualAnalysisState.tryStart(clickedAtMs)
                 ManualAnalysisRequestResult.Sent
             },
-            delayedActionScheduler = FakeDelayedActionScheduler(),
+            delayedActionScheduler = scheduler,
             mainThreadDispatcher = FakeMainThreadDispatcher()
         )
 
         controller.show()
         factory.lastHandle?.performDragTo(180)
+        scheduler.runAll()
 
         assertEquals(180, positionStore.savedX ?: -1)
         assertTrue(host.updatedXs.contains(180))
@@ -174,6 +176,7 @@ class PiuOverlayControllerTest {
         val host = FakeOverlayWindowHost()
         val factory = FakePiuOverlayViewFactory(handleWidthPx = 268)
         val positionStore = FakePiuOverlayPositionStore(initialX = 0)
+        val scheduler = FakeDelayedActionScheduler()
         val controller = PiuOverlayController(
             context = context,
             host = host,
@@ -187,15 +190,53 @@ class PiuOverlayControllerTest {
                 ManualAnalysisState.tryStart(clickedAtMs)
                 ManualAnalysisRequestResult.Sent
             },
-            delayedActionScheduler = FakeDelayedActionScheduler(),
+            delayedActionScheduler = scheduler,
             mainThreadDispatcher = FakeMainThreadDispatcher()
         )
 
         controller.show()
         factory.lastHandle?.performDragTo(2_000)
+        scheduler.runAll()
 
         assertEquals(812, positionStore.savedX ?: -1)
         assertTrue(host.updatedXs.contains(812))
+    }
+
+    @Test
+    fun drag_doesNotPersistOnEveryMove() {
+        val host = FakeOverlayWindowHost()
+        val factory = FakePiuOverlayViewFactory()
+        val positionStore = FakePiuOverlayPositionStore(initialX = 50)
+        val scheduler = FakeDelayedActionScheduler()
+        val controller = PiuOverlayController(
+            context = context,
+            host = host,
+            viewFactory = factory,
+            positionStore = positionStore,
+            overlayPermissionChecker = { true },
+            screenWidthPxProvider = { 1080 },
+            topInsetPxProvider = { 12 },
+            defaultOverlayWidthPxProvider = { 220 },
+            manualRequestSender = { _, clickedAtMs ->
+                ManualAnalysisState.tryStart(clickedAtMs)
+                ManualAnalysisRequestResult.Sent
+            },
+            delayedActionScheduler = scheduler,
+            mainThreadDispatcher = FakeMainThreadDispatcher()
+        )
+
+        controller.show()
+        factory.lastHandle?.performDragTo(120)
+        factory.lastHandle?.performDragTo(140)
+
+        assertEquals(50, positionStore.savedX ?: -1)
+
+        scheduler.runAll()
+
+        assertEquals(140, positionStore.savedX ?: -1)
+        assertEquals(1, positionStore.saveCount)
+        assertTrue(host.updatedXs.contains(120))
+        assertTrue(host.updatedXs.contains(140))
     }
 
     @Test
@@ -401,12 +442,14 @@ class PiuOverlayControllerTest {
     ) : PiuOverlayPositionStore {
         private var currentX = initialX
         var savedX: Int? = initialX
+        var saveCount: Int = 0
 
         override fun restoreX(defaultValue: Int): Int = currentX ?: defaultValue
 
         override fun saveX(value: Int) {
             currentX = value
             savedX = value
+            saveCount += 1
         }
     }
 

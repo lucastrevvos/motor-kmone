@@ -76,10 +76,15 @@ class PiuOverlayController(
     private val delayedActionScheduler: DelayedActionScheduler = AndroidDelayedActionScheduler(),
     private val mainThreadDispatcher: MainThreadDispatcher = AndroidMainThreadDispatcher()
 ) {
+    private companion object {
+        const val DRAG_POSITION_PERSIST_DEBOUNCE_MS = 220L
+    }
+
     private var state = PiuOverlayState()
     private var viewHandle: PiuOverlayViewHandle? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var pendingEnableHandle: DelayedActionHandle? = null
+    private var pendingPersistHandle: DelayedActionHandle? = null
     private val manualStateListener: (ManualAnalysisSnapshot) -> Unit = { snapshot ->
         runOnMain("manual_state_listener") {
             refreshAnalyzeButtonInternal(snapshot)
@@ -174,10 +179,12 @@ class PiuOverlayController(
                     "message" to throwable.message
                 )
             } finally {
+                persistOverlayPosition(immediate = true)
                 state = state.copy(showing = false)
                 layoutParams = null
                 ManualAnalysisState.unregisterListener(manualStateListener)
                 cancelPendingEnable()
+                cancelPendingPersist()
                 RadarDebugStore.updatePiuOverlayState(
                     permissionGranted = overlayPermissionChecker(),
                     showing = false,
@@ -288,14 +295,7 @@ class PiuOverlayController(
             try {
                 host.update(handle, params)
                 state = state.copy(x = clampedX)
-                positionStore.saveX(clampedX)
-                RadarLogger.d("KM_V2_OVERLAY", "KM_V2_PIU_MOVED_X", "x" to clampedX)
-                RadarLogger.i("KM_V2_OVERLAY", "KM_V2_PIU_POSITION_SAVED", "x" to clampedX)
-                RadarDebugStore.updatePiuOverlayState(
-                    permissionGranted = overlayPermissionChecker(),
-                    showing = state.showing,
-                    x = clampedX
-                )
+                schedulePersistOverlayPosition()
             } catch (throwable: Throwable) {
                 RadarLogger.w(
                     "KM_V2_OVERLAY",
@@ -392,6 +392,36 @@ class PiuOverlayController(
     private fun cancelPendingEnable() {
         pendingEnableHandle?.cancel()
         pendingEnableHandle = null
+    }
+
+    private fun schedulePersistOverlayPosition() {
+        cancelPendingPersist()
+        pendingPersistHandle = delayedActionScheduler.schedule(DRAG_POSITION_PERSIST_DEBOUNCE_MS) {
+            runOnMain("persist_overlay_position") {
+                persistOverlayPosition(immediate = false)
+            }
+        }
+    }
+
+    private fun persistOverlayPosition(immediate: Boolean) {
+        cancelPendingPersist()
+        positionStore.saveX(state.x)
+        RadarLogger.i(
+            "KM_V2_OVERLAY",
+            "KM_V2_PIU_POSITION_SAVED",
+            "x" to state.x,
+            "immediate" to immediate
+        )
+        RadarDebugStore.updatePiuOverlayState(
+            permissionGranted = overlayPermissionChecker(),
+            showing = state.showing,
+            x = state.x
+        )
+    }
+
+    private fun cancelPendingPersist() {
+        pendingPersistHandle?.cancel()
+        pendingPersistHandle = null
     }
 
     private fun runOnMain(operation: String, block: () -> Unit) {

@@ -1,5 +1,6 @@
 package com.lucastrevvos.kmonemotor.radar.seenoffers
 
+import com.lucastrevvos.kmonemotor.radar.debug.RadarLogger
 import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.roundToInt
@@ -47,6 +48,7 @@ class HomeDailySummaryProvider(
         savedRides: List<SavedRide>,
         nowMs: Long = System.currentTimeMillis()
     ): HomeDailySummary {
+        val startedAt = System.nanoTime()
         val zoneId = zoneIdProvider()
         val todaySeenOffers = seenOffers.filter { it.createdAtMs.isSameDayAs(nowMs, zoneId) }
         val todayRides = savedRides.filter { it.acceptedAtMs.isSameDayAs(nowMs, zoneId) }
@@ -91,7 +93,17 @@ class HomeDailySummaryProvider(
             bestRidePrice = bestRide?.price,
             bestRideProductName = bestRide?.productName,
             isGoalReached = effectiveGoal != null && earnedToday >= effectiveGoal
-        )
+        ).also { summary ->
+            RadarLogger.i(
+                "KM_V2_PERF",
+                "KM_V2_PERF_HOME_SUMMARY_DURATION",
+                "durationMs" to elapsedDurationMs(startedAt),
+                "seenOfferCount" to seenOffers.size,
+                "savedRideCount" to savedRides.size,
+                "todayRideCount" to summary.acceptedRidesCount,
+                "earnedToday" to summary.earnedToday
+            )
+        }
     }
 
     private fun rideDistanceKm(ride: SavedRide): Double? {
@@ -123,5 +135,9 @@ class HomeDailySummaryProvider(
 
     companion object {
         const val DEFAULT_FALLBACK_DAILY_GOAL_BRL = 150.0
+    }
+
+    private fun elapsedDurationMs(startedAtNanos: Long): Long {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000L
     }
 }
