@@ -102,6 +102,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.time.Instant
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 import java.util.Date
 import java.util.Locale
 
@@ -136,19 +139,19 @@ private enum class SeenFilter(
 }
 
 private object KmOnePalette {
-    val Background = Color(0xFF07111B)
-    val BackgroundDeep = Color(0xFF040B13)
-    val Card = Color(0xCC111C29)
-    val CardAlt = Color(0xFF132234)
-    val Neon = Color(0xFF5BFF9A)
-    val NeonSoft = Color(0xFF39C97A)
+    val Background = Color(0xFF07111C)
+    val BackgroundDeep = Color(0xFF02070D)
+    val Card = Color(0xE60B1624)
+    val CardAlt = Color(0xCC102033)
+    val Neon = Color(0xFF00E676)
+    val NeonSoft = Color(0xFF00B359)
     val ElectricBlue = Color(0xFF5AA8FF)
-    val Line = Color(0x6638FF97)
+    val Line = Color(0x4700E676)
     val TextPrimary = Color(0xFFF4F8FF)
-    val TextSecondary = Color(0xFF9FB3C8)
-    val Positive = Color(0xFF52D67A)
-    val Attention = Color(0xFFFFC857)
-    val Negative = Color(0xFFFF6F7D)
+    val TextSecondary = Color(0xFFAAB7C4)
+    val Positive = Color(0xFF00E676)
+    val Attention = Color(0xFFF7C948)
+    val Negative = Color(0xFFEF4444)
     val Neutral = Color(0xFF7D93A8)
 }
 
@@ -320,7 +323,12 @@ private fun KmOneApp(debugState: RadarDebugState) {
                 .fillMaxSize()
                 .background(
                     brush = Brush.verticalGradient(
-                        colors = listOf(KmOnePalette.Background, KmOnePalette.BackgroundDeep)
+                        colors = listOf(
+                            KmOnePalette.BackgroundDeep,
+                            KmOnePalette.Background,
+                            Color(0xFF06251A),
+                            KmOnePalette.BackgroundDeep
+                        )
                     )
                 )
                 .padding(innerPadding)
@@ -329,6 +337,9 @@ private fun KmOneApp(debugState: RadarDebugState) {
                 AppTab.HOME -> HomeDashboardFinalTab(
                     debugState = debugState,
                     homeState = homeState,
+                    seenOffers = seenState.offers,
+                    savedRides = savedRides,
+                    fuelEntries = fuelEntries,
                     onOpenAccessibility = {
                         context.startActivity(
                             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -375,7 +386,10 @@ private fun KmOneApp(debugState: RadarDebugState) {
                             )
                         }
                     },
-                    onConfigureGoal = { selectedTab = AppTab.CONFIG }
+                    onConfigureGoal = { selectedTab = AppTab.CONFIG },
+                    onOpenSeen = { selectedTab = AppTab.SEEN },
+                    onOpenRecords = { selectedTab = AppTab.RIDES },
+                    onOpenConfig = { selectedTab = AppTab.CONFIG }
                 )
 
                 AppTab.SEEN -> SeenOffersTab(
@@ -759,72 +773,124 @@ private fun HomeDashboardTab(
 private fun HomeDashboardFinalTab(
     debugState: RadarDebugState,
     homeState: HomeUiState,
+    seenOffers: List<SeenOffer>,
+    savedRides: List<SavedRide>,
+    fuelEntries: List<FuelEntry>,
     onOpenAccessibility: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
     onShowPiu: () -> Unit,
     onHidePiu: () -> Unit,
     onManualAnalyze: () -> Unit,
-    onConfigureGoal: () -> Unit
+    onConfigureGoal: () -> Unit,
+    onOpenSeen: () -> Unit,
+    onOpenRecords: () -> Unit,
+    onOpenConfig: () -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        item {
-            HomeBrandHeader()
-        }
-        item {
-            DailyGoalCard(
-                summary = homeState.summary,
-                isLoading = homeState.isLoading,
-                errorMessage = homeState.errorMessage,
-                onConfigureGoal = onConfigureGoal
-            )
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricPanel(
-                    modifier = Modifier.weight(1f),
-                    label = "Corridas",
-                    value = homeState.summary.acceptedRidesCount.toString(),
-                    accent = KmOnePalette.Positive
-                )
-                MetricPanel(
-                    modifier = Modifier.weight(1f),
-                    label = "Km rodados",
-                    value = homeState.summary.totalKmToday?.let(::formatKmCompact) ?: "--",
-                    accent = KmOnePalette.Neon
+    val todayFuelSpend = remember(fuelEntries) { fuelEntries.sumFuelSpentToday() }
+    val todayFuelCount = remember(fuelEntries) { fuelEntries.countTodayEntries() }
+    val yesterdayDelta = remember(savedRides) { savedRides.dayOverDayEarnedDelta(homeState.summary.earnedToday) }
+    val recentActivity = remember(seenOffers, savedRides) { buildHomeRecentActivity(seenOffers, savedRides) }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        HomeDashboardBackgroundDecor()
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 18.dp, top = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item {
+                HomeBrandHeader(
+                    isServiceActive = debugState.serviceActive,
+                    seenOffersCount = homeState.summary.seenOffersCount,
+                    onOpenConfig = onOpenConfig
                 )
             }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                MetricPanel(
-                    modifier = Modifier.weight(1f),
-                    label = "Media",
-                    value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
-                    accent = KmOnePalette.Attention,
-                    valueStyle = MaterialTheme.typography.titleLarge
-                )
-                MetricPanel(
-                    modifier = Modifier.weight(1f),
-                    label = "Abastecido",
-                    value = "--",
-                    accent = KmOnePalette.ElectricBlue
+            item {
+                HomeHeroCard(
+                    summary = homeState.summary,
+                    isLoading = homeState.isLoading,
+                    errorMessage = homeState.errorMessage,
+                    yesterdayDelta = yesterdayDelta,
+                    onAnalyze = onManualAnalyze,
+                    onConfigureGoal = onConfigureGoal
                 )
             }
-        }
-        item {
-            CockpitCard(title = "Atalhos", accent = Color(0x4438FF97)) {
-                ActionGrid(
-                    actions = listOf(
-                        QuickAction("Acessibilidade", onOpenAccessibility),
-                        QuickAction("Permissao overlay", onRequestOverlayPermission),
-                        QuickAction("Mostrar painel", onShowPiu),
-                        QuickAction("Ocultar painel", onHidePiu)
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    HomeMetricCard(
+                        modifier = Modifier.weight(1f),
+                        label = "R$/km medio",
+                        value = homeState.summary.averageValuePerKm?.let(::formatPerKm) ?: "--",
+                        detail = homeState.summary.totalKmToday?.let { "${formatKmCompact(it)} hoje" } ?: "Aguardando corridas",
+                        accent = KmOnePalette.Attention,
+                        iconResId = R.drawable.ic_goal_remaining
                     )
+                    HomeMetricCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Corridas",
+                        value = homeState.summary.acceptedRidesCount.toString(),
+                        detail = "${homeState.summary.seenOffersCount} vistas hoje",
+                        accent = KmOnePalette.Positive,
+                        iconResId = R.drawable.ic_clipboard
+                    )
+                }
+            }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    HomeMetricCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Abastecido",
+                        value = if (todayFuelSpend > 0.0) formatMoney(todayFuelSpend) else "--",
+                        detail = if (todayFuelCount > 0) "$todayFuelCount abastecimento(s)" else "Nenhum abastecimento hoje",
+                        accent = KmOnePalette.ElectricBlue,
+                        iconResId = R.drawable.ic_settings
+                    )
+                    HomeMetricCard(
+                        modifier = Modifier.weight(1f),
+                        label = "Lucro liquido",
+                        value = formatMoney(homeState.summary.earnedToday - todayFuelSpend),
+                        detail = profitShareText(homeState.summary.earnedToday, todayFuelSpend),
+                        accent = if (homeState.summary.earnedToday - todayFuelSpend >= 0.0) KmOnePalette.Neon else KmOnePalette.Negative,
+                        iconResId = R.drawable.ic_today_earnings
+                    )
+                }
+            }
+            item {
+                HomeRecentActivityCard(
+                    recentActivity = recentActivity,
+                    onOpenSeen = onOpenSeen,
+                    onOpenRecords = onOpenRecords
                 )
+            }
+            item {
+                HomeShortcutGrid(
+                    onOpenRecords = onOpenRecords,
+                    onOpenSeen = onOpenSeen
+                )
+            }
+            item {
+                AnalyzeOfferCta(
+                    isServiceActive = debugState.serviceActive,
+                    onManualAnalyze = onManualAnalyze
+                )
+            }
+            item {
+                HomeInsightCard(
+                    summary = homeState.summary,
+                    todayFuelSpend = todayFuelSpend
+                )
+            }
+            item {
+                CockpitCard(title = "Radar e atalhos", accent = Color(0x3327C87B)) {
+                    ActionGrid(
+                        actions = listOf(
+                            QuickAction("Acessibilidade", onOpenAccessibility),
+                            QuickAction("Permissao overlay", onRequestOverlayPermission),
+                            QuickAction("Mostrar painel", onShowPiu),
+                            QuickAction("Ocultar painel", onHidePiu)
+                        )
+                    )
+                }
             }
         }
     }
@@ -856,27 +922,562 @@ private fun KmOneLaunchBrandScreen() {
 }
 
 @Composable
-private fun HomeBrandHeader() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = Color.Transparent
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            StatusChip(
-                text = "KM One",
-                background = Color(0x1F5BFF9A),
-                textColor = KmOnePalette.Neon
+private fun HomeDashboardBackgroundDecor() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                brush = Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF02070D),
+                        Color(0xFF07111C),
+                        Color(0xFF06251A),
+                        Color(0xFF02070D)
+                    )
+                )
             )
-            Spacer(modifier = Modifier.width(12.dp))
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(300.dp)
+                .background(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0x3300E676), Color.Transparent)
+                    )
+                )
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(180.dp)
+                .background(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color.Transparent, Color(0x1400E676), Color.Transparent)
+                    )
+                )
+        )
+    }
+}
+
+@Composable
+private fun HomeBrandHeader(
+    isServiceActive: Boolean,
+    seenOffersCount: Int,
+    onOpenConfig: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Image(
                 painter = painterResource(id = R.drawable.kmone_logo_full),
                 contentDescription = "Marca KM One",
-                modifier = Modifier.height(30.dp),
+                modifier = Modifier.height(42.dp),
                 contentScale = ContentScale.Fit
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HomeStatusPill(
+                    text = if (isServiceActive) "KM One ativo" else "Radar em espera",
+                    accent = if (isServiceActive) KmOnePalette.Neon else KmOnePalette.Attention
+                )
+                HomeStatusPill(
+                    text = "$seenOffersCount vistas hoje",
+                    accent = KmOnePalette.ElectricBlue
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(Color(0x22102033))
+                .border(1.dp, KmOnePalette.Line, CircleShape)
+                .clickable(onClick = onOpenConfig),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_settings),
+                contentDescription = "Configuracoes",
+                modifier = Modifier.size(20.dp),
+                colorFilter = ColorFilter.tint(KmOnePalette.TextPrimary)
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeStatusPill(
+    text: String,
+    accent: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = Color(0x1A102033),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.28f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(accent)
+            )
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextPrimary,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeHeroCard(
+    summary: HomeDailySummary,
+    isLoading: Boolean,
+    errorMessage: String?,
+    yesterdayDelta: Double?,
+    onAnalyze: () -> Unit,
+    onConfigureGoal: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xD90B1624),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x4700E676))
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0x3300E676), Color.Transparent)
+                        )
+                    )
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Total do dia",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = KmOnePalette.TextSecondary
+                        )
+                        Text(
+                            text = formatMoney(summary.earnedToday),
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = KmOnePalette.TextPrimary
+                        )
+                        Text(
+                            text = yesterdayDeltaLabel(yesterdayDelta),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if ((yesterdayDelta ?: 0.0) >= 0.0) KmOnePalette.Neon else KmOnePalette.Negative
+                        )
+                    }
+                    HomeStatusPill(
+                        text = if (summary.isGoalReached) "Meta batida" else "${summary.progressPercent ?: 0}% da meta",
+                        accent = if (summary.isGoalReached) KmOnePalette.Positive else KmOnePalette.ElectricBlue
+                    )
+                }
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Meta diaria",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = KmOnePalette.TextSecondary
+                        )
+                        Text(
+                            text = summary.dailyGoal?.let(::formatMoney) ?: "--",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = KmOnePalette.TextPrimary
+                        )
+                    }
+                    GoalProgressBar(progress = summary.progressFraction)
+                    Text(
+                        text = when {
+                            errorMessage != null -> errorMessage
+                            isLoading -> "Atualizando painel do dia..."
+                            summary.goalSource == HomeGoalSource.MISSING -> "Defina uma meta para acompanhar seu progresso."
+                            summary.isGoalReached -> "Voce passou da meta e segue acelerando acima do alvo."
+                            else -> "Faltam ${formatMoney(summary.remainingToGoal)} para bater a meta."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = onAnalyze,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = KmOnePalette.Neon,
+                            contentColor = KmOnePalette.BackgroundDeep
+                        )
+                    ) {
+                        Text("Analisar", fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = onConfigureGoal,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+                    ) {
+                        Text("Meta diaria")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeMetricCard(
+    modifier: Modifier = Modifier,
+    label: String,
+    value: String,
+    detail: String,
+    accent: Color,
+    iconResId: Int
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xD9102033),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.22f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.18f))
+                    .border(1.dp, accent.copy(alpha = 0.32f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(id = iconResId),
+                    contentDescription = label,
+                    modifier = Modifier.size(18.dp),
+                    colorFilter = ColorFilter.tint(accent)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = KmOnePalette.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = accent
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeRecentActivityCard(
+    recentActivity: HomeRecentActivity?,
+    onOpenSeen: () -> Unit,
+    onOpenRecords: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xD90B1624),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x2E5AA8FF))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Ultima oferta ou corrida",
+                style = MaterialTheme.typography.titleMedium,
+                color = KmOnePalette.TextPrimary,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (recentActivity == null) {
+                Text(
+                    text = "Nenhuma oferta vista ainda. Ative o radar e aguarde novas corridas.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KmOnePalette.TextSecondary
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            HomeStatusPill(recentActivity.platformLabel, recentActivity.platformAccent)
+                            HomeStatusPill(recentActivity.kindLabel, KmOnePalette.ElectricBlue)
+                        }
+                        Text(
+                            text = recentActivity.priceLabel,
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = KmOnePalette.TextPrimary
+                        )
+                        Text(
+                            text = recentActivity.valuePerKmLabel,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = KmOnePalette.Neon
+                        )
+                    }
+                    Text(
+                        text = recentActivity.timeLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                }
+                DetailLine("Origem", recentActivity.originLabel)
+                DetailLine("Destino", recentActivity.destinationLabel)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    HomeStatusPill(recentActivity.tripTimeLabel, KmOnePalette.Attention)
+                    HomeStatusPill(recentActivity.tripDistanceLabel, KmOnePalette.Neon)
+                    HomeStatusPill(recentActivity.totalDistanceLabel, KmOnePalette.ElectricBlue)
+                }
+                TextButton(onClick = if (recentActivity.opensSeen) onOpenSeen else onOpenRecords) {
+                    Text(
+                        text = if (recentActivity.opensSeen) "Ver vistas >" else "Ver registros >",
+                        color = KmOnePalette.Neon
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeShortcutGrid(
+    onOpenRecords: () -> Unit,
+    onOpenSeen: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            text = "Atalhos principais",
+            style = MaterialTheme.typography.titleMedium,
+            color = KmOnePalette.TextPrimary,
+            fontWeight = FontWeight.SemiBold
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HomeShortcutCard(
+                modifier = Modifier.weight(1f),
+                title = "Corrida manual",
+                subtitle = "Registrar corrida",
+                iconResId = R.drawable.ic_clipboard,
+                accent = KmOnePalette.Positive,
+                onClick = onOpenRecords
+            )
+            HomeShortcutCard(
+                modifier = Modifier.weight(1f),
+                title = "Abastecimento",
+                subtitle = "Registrar gasto",
+                iconResId = R.drawable.ic_settings,
+                accent = KmOnePalette.ElectricBlue,
+                onClick = onOpenRecords
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            HomeShortcutCard(
+                modifier = Modifier.weight(1f),
+                title = "Vistas",
+                subtitle = "Ver ofertas",
+                iconResId = R.drawable.ic_eye,
+                accent = KmOnePalette.Neon,
+                emphasized = true,
+                onClick = onOpenSeen
+            )
+            HomeShortcutCard(
+                modifier = Modifier.weight(1f),
+                title = "Registros",
+                subtitle = "Historico completo",
+                iconResId = R.drawable.ic_home,
+                accent = KmOnePalette.Attention,
+                onClick = onOpenRecords
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeShortcutCard(
+    modifier: Modifier = Modifier,
+    title: String,
+    subtitle: String,
+    iconResId: Int,
+    accent: Color,
+    emphasized: Boolean = false,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(24.dp),
+        color = if (emphasized) Color(0xE3122531) else Color(0xD9102033),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = if (emphasized) 0.36f else 0.22f))
+    ) {
+        Box {
+            if (emphasized) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp)
+                        .background(
+                            brush = Brush.radialGradient(
+                                colors = listOf(Color(0x2600E676), Color.Transparent)
+                            )
+                        )
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(accent.copy(alpha = 0.18f))
+                        .border(1.dp, accent.copy(alpha = 0.3f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = iconResId),
+                        contentDescription = title,
+                        modifier = Modifier.size(18.dp),
+                        colorFilter = ColorFilter.tint(accent)
+                    )
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = KmOnePalette.TextPrimary
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+                Text(
+                    text = ">",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = accent,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeInsightCard(
+    summary: HomeDailySummary,
+    todayFuelSpend: Double
+) {
+    val message = when {
+        summary.averageValuePerKm != null && summary.averageValuePerKm >= 2.0 ->
+            "Seu R$/km medio esta acima da meta de refer\u00EAncia. Mantenha esse ritmo nas proximas corridas."
+        todayFuelSpend > 0.0 && summary.earnedToday > todayFuelSpend ->
+            "Seu lucro liquido segue positivo mesmo com abastecimento hoje. Vale priorizar corridas com busca curta."
+        else ->
+            "Acompanhe seu R$/km medio para evitar corridas abaixo da sua meta do dia."
+    }
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xD9102033),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x33F7C948))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x1AF7C948))
+                        .border(1.dp, Color(0x44F7C948), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "AI",
+                        color = KmOnePalette.Attention,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "Dica para voce",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = KmOnePalette.TextPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Leitura rapida do seu painel de hoje",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                }
+            }
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = KmOnePalette.TextPrimary
             )
         }
     }
@@ -3046,7 +3647,7 @@ private fun KmOneBottomBar(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
             .navigationBarsPadding(),
-        color = Color(0xE6121E2B),
+        color = Color(0xE20B1624),
         shape = RoundedCornerShape(26.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
     ) {
@@ -3063,7 +3664,13 @@ private fun KmOneBottomBar(
                         .weight(1f)
                         .clip(RoundedCornerShape(20.dp))
                         .clickable { onSelected(tab) }
-                        .background(if (selected) Color(0x185BFF9A) else Color.Transparent)
+                        .background(
+                            if (selected) {
+                                Color(0x2600E676)
+                            } else {
+                                Color.Transparent
+                            }
+                        )
                         .padding(horizontal = 4.dp, vertical = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -3072,8 +3679,8 @@ private fun KmOneBottomBar(
                         modifier = Modifier
                             .size(34.dp)
                             .clip(CircleShape)
-                            .background(if (selected) KmOnePalette.Neon else KmOnePalette.CardAlt)
-                            .border(1.dp, KmOnePalette.Line, CircleShape),
+                            .background(if (selected) KmOnePalette.Neon.copy(alpha = 0.95f) else KmOnePalette.CardAlt)
+                            .border(1.dp, if (selected) KmOnePalette.Neon.copy(alpha = 0.5f) else KmOnePalette.Line, CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         androidx.compose.foundation.Image(
@@ -3097,6 +3704,116 @@ private fun KmOneBottomBar(
                 }
             }
         }
+    }
+}
+
+private data class HomeRecentActivity(
+    val kindLabel: String,
+    val opensSeen: Boolean,
+    val platformLabel: String,
+    val platformAccent: Color,
+    val priceLabel: String,
+    val valuePerKmLabel: String,
+    val originLabel: String,
+    val destinationLabel: String,
+    val tripTimeLabel: String,
+    val tripDistanceLabel: String,
+    val totalDistanceLabel: String,
+    val timeLabel: String
+)
+
+private fun buildHomeRecentActivity(
+    seenOffers: List<SeenOffer>,
+    savedRides: List<SavedRide>
+): HomeRecentActivity? {
+    val lastSeen = seenOffers.maxByOrNull { it.createdAtMs }
+    val lastRide = savedRides.maxByOrNull { it.acceptedAtMs }
+    return when {
+        lastRide == null && lastSeen == null -> null
+        lastRide != null && (lastSeen == null || lastRide.acceptedAtMs >= lastSeen.createdAtMs) -> {
+            val economics = resolvedSavedRideEconomics(lastRide)
+            HomeRecentActivity(
+                kindLabel = "CORRIDA",
+                opensSeen = false,
+                platformLabel = platformLabel(lastRide.platform),
+                platformAccent = platformAccent(lastRide.platform),
+                priceLabel = formatMoney(lastRide.price),
+                valuePerKmLabel = savedRidePerKmLabel(lastRide),
+                originLabel = lastRide.originPreview ?: "Nao identificada",
+                destinationLabel = lastRide.destinationPreview ?: "Nao identificado",
+                tripTimeLabel = lastRide.tripTimeMin?.let(::formatMinutes) ?: "Tempo n/d",
+                tripDistanceLabel = economics.tripDistanceKm?.let(::formatKmCompact) ?: "Km n/d",
+                totalDistanceLabel = economics.totalDistanceKm?.let(::formatKmCompact)?.plus(" total") ?: "Total n/d",
+                timeLabel = formatRecordStamp(lastRide.acceptedAtMs, RecordsPeriodFilter.DAY, includeDateForDay = true)
+            )
+        }
+        else -> {
+            val seen = lastSeen ?: return null
+            val economics = resolvedSeenOfferEconomics(seen)
+            HomeRecentActivity(
+                kindLabel = "OFERTA",
+                opensSeen = true,
+                platformLabel = platformLabel(seen.platform),
+                platformAccent = platformAccent(seen.platform),
+                priceLabel = formatMoney(seen.price),
+                valuePerKmLabel = seenOfferPerKmLabel(seen),
+                originLabel = seen.originPreview ?: "Nao identificada",
+                destinationLabel = seen.destinationPreview ?: "Nao identificado",
+                tripTimeLabel = seen.tripTimeMin?.let(::formatMinutes) ?: "Tempo n/d",
+                tripDistanceLabel = economics.tripDistanceKm?.let(::formatKmCompact) ?: "Km n/d",
+                totalDistanceLabel = economics.totalDistanceKm?.let(::formatKmCompact)?.plus(" total") ?: "Total n/d",
+                timeLabel = formatTimeStamp(seen.createdAtMs)
+            )
+        }
+    }
+}
+
+private fun List<FuelEntry>.sumFuelSpentToday(nowMs: Long = System.currentTimeMillis()): Double {
+    val today = Instant.ofEpochMilli(nowMs).atZone(ZoneId.systemDefault()).toLocalDate()
+    return filter {
+        Instant.ofEpochMilli(it.createdAtMs).atZone(ZoneId.systemDefault()).toLocalDate() == today
+    }.sumOf { it.amountBrl }
+}
+
+private fun List<FuelEntry>.countTodayEntries(nowMs: Long = System.currentTimeMillis()): Int {
+    val today = Instant.ofEpochMilli(nowMs).atZone(ZoneId.systemDefault()).toLocalDate()
+    return count {
+        Instant.ofEpochMilli(it.createdAtMs).atZone(ZoneId.systemDefault()).toLocalDate() == today
+    }
+}
+
+private fun List<SavedRide>.dayOverDayEarnedDelta(
+    todayEarned: Double,
+    nowMs: Long = System.currentTimeMillis()
+): Double? {
+    val zoneId = ZoneId.systemDefault()
+    val today = Instant.ofEpochMilli(nowMs).atZone(zoneId).toLocalDate()
+    val yesterday = today.minus(1, ChronoUnit.DAYS)
+    val yesterdayEarned = filter {
+        Instant.ofEpochMilli(it.acceptedAtMs).atZone(zoneId).toLocalDate() == yesterday
+    }.sumOf { it.price ?: 0.0 }
+    if (yesterdayEarned == 0.0) return null
+    return ((todayEarned - yesterdayEarned) / yesterdayEarned) * 100.0
+}
+
+private fun yesterdayDeltaLabel(delta: Double?): String {
+    if (delta == null) return "Sem base de ontem"
+    val prefix = if (delta >= 0.0) "+" else ""
+    return "$prefix${String.format(Locale.US, "%.0f", delta)}% vs ontem"
+}
+
+private fun profitShareText(earnedToday: Double, fuelSpendToday: Double): String {
+    if (earnedToday <= 0.0) return "Sem bruto fechado ainda"
+    val net = earnedToday - fuelSpendToday
+    val share = (net / earnedToday) * 100.0
+    return "${String.format(Locale.US, "%.0f", share.coerceAtLeast(0.0))}% do bruto"
+}
+
+private fun platformAccent(platform: RidePlatform): Color {
+    return when (platform) {
+        RidePlatform.NINETY_NINE -> KmOnePalette.Attention
+        RidePlatform.UBER -> KmOnePalette.Neon
+        RidePlatform.UNKNOWN -> KmOnePalette.ElectricBlue
     }
 }
 
