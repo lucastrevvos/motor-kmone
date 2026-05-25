@@ -38,10 +38,12 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -207,6 +209,12 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     var debugExporting by remember { mutableStateOf(false) }
     var debugExportMessage by remember { mutableStateOf<String?>(null) }
     var showLaunchBrand by remember { mutableStateOf(true) }
+    val liveHomeSummary = remember(seenState.offers, savedRides, driverSettings.dailyGoalBrl) {
+        homeSummaryProvider.summarize(
+            seenOffers = seenState.offers,
+            savedRides = savedRides
+        )
+    }
 
     suspend fun reloadSeenOffers(): List<SeenOffer> {
         seenState = seenState.copy(isLoading = true, errorMessage = null)
@@ -264,7 +272,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
         }
     }
 
-    fun refreshAll() {
+    fun refreshAll(onComplete: ((seenOfferCount: Int, savedRideCount: Int) -> Unit)? = null) {
         coroutineScope.launch {
             homeState = homeState.copy(isLoading = true, errorMessage = null)
             reloadDriverSettings()
@@ -280,6 +288,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                 isLoading = false,
                 errorMessage = seenState.errorMessage ?: ridesError
             )
+            onComplete?.invoke(offers.size, rides.size)
         }
     }
 
@@ -320,6 +329,18 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
         return
     }
 
+    LaunchedEffect(liveHomeSummary.earnedToday) {
+        val earningsText = formatMoney(liveHomeSummary.earnedToday)
+        overlayController.updateEarningsText(earningsText)
+        RadarLogger.i(
+            "KM_V2_OVERLAY",
+            "KM_V2_PIU_EARNINGS_TEXT_UPDATED",
+            "text" to earningsText,
+            "earnedToday" to liveHomeSummary.earnedToday,
+            "source" to "home_daily_summary"
+        )
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = Color.Transparent,
@@ -346,12 +367,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                     HomeDashboardFinalTab(
                         debugState = debugState,
                         homeState = homeState,
-                        resolvedSummary = remember(seenState.offers, savedRides, driverSettings.dailyGoalBrl) {
-                            homeSummaryProvider.summarize(
-                                seenOffers = seenState.offers,
-                                savedRides = savedRides
-                            )
-                        },
+                        resolvedSummary = liveHomeSummary,
                         seenOffers = seenState.offers,
                         savedRides = savedRides,
                         fuelEntries = fuelEntries,
@@ -436,7 +452,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
 
                 AppTab.SEEN -> SeenOffersTab(
                     state = seenState,
-                    onRefresh = { refreshAll() },
+                    onRefresh = { onComplete -> refreshAll(onComplete) },
                     onSave = { offerId ->
                         coroutineScope.launch {
                             withContext(Dispatchers.IO) {
@@ -446,6 +462,14 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                         "KM_V2_SEEN",
                                         "KM_V2_SEEN_OFFER_SAVED_MANUALLY_FROM_VIEWS",
                                         "seenOfferId" to offerId,
+                                        "savedRideId" to savedRide.id
+                                    )
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SAVED_RIDE_CREATED",
+                                        "source" to "seen_offer_manual_accept",
+                                        "price" to savedRide.price,
+                                        "createdAt" to savedRide.acceptedAtMs,
                                         "savedRideId" to savedRide.id
                                     )
                                 }
@@ -540,6 +564,14 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                         "savedRideId" to updatedRide.id,
                                         "price" to updatedRide.price,
                                         "valuePerKm" to updatedRide.valuePerKm
+                                    )
+                                    RadarLogger.i(
+                                        "KM_V2_SEEN",
+                                        "KM_V2_SAVED_RIDE_CREATED",
+                                        "source" to "manual_entry",
+                                        "price" to updatedRide.price,
+                                        "createdAt" to updatedRide.acceptedAtMs,
+                                        "savedRideId" to updatedRide.id
                                     )
                                 }
                             }
@@ -1562,14 +1594,16 @@ private fun HomeInsightCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SeenOffersTab(
     state: SeenOffersUiState,
-    onRefresh: () -> Unit,
+    onRefresh: (((Int, Int) -> Unit)?) -> Unit,
     onSave: (String) -> Unit,
     onIgnore: (String) -> Unit,
     onClearPending: (List<String>) -> Unit
 ) {
+    var pullRefreshing by remember { mutableStateOf(false) }
     val filteredOffers = remember(state.offers) {
         state.offers.filter { offer ->
             offer.status == SeenOfferStatus.SEEN &&
@@ -1580,66 +1614,86 @@ private fun SeenOffersTab(
     val uiModels = remember(filteredOffers) { filteredOffers.map(uiMapper::map) }
     val offerById = remember(filteredOffers) { filteredOffers.associateBy { it.id } }
     var expandedSeenOfferId by remember(filteredOffers) { mutableStateOf<String?>(null) }
+    val isRefreshing = pullRefreshing || (state.isLoading && state.offers.isNotEmpty())
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        HeaderSection(
-            title = "Ofertas vistas",
-            subtitle = "Decida o que fazer com as ofertas pendentes."
-        )
-        when {
-            state.isLoading -> Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = KmOnePalette.Neon)
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            if (pullRefreshing) return@PullToRefreshBox
+            pullRefreshing = true
+            RadarLogger.i("KM_V2_SEEN", "KM_V2_SEEN_OFFERS_PULL_REFRESH_STARTED")
+            onRefresh { seenOfferCount, savedRideCount ->
+                pullRefreshing = false
+                RadarLogger.i(
+                    "KM_V2_SEEN",
+                    "KM_V2_SEEN_OFFERS_PULL_REFRESH_FINISHED",
+                    "seenOfferCount" to seenOfferCount,
+                    "savedRideCount" to savedRideCount
+                )
             }
-
-            state.errorMessage != null -> EmptyState(
-                title = "Nao foi possivel carregar",
-                message = state.errorMessage,
-                actionLabel = "Tentar novamente",
-                onAction = onRefresh
+        },
+        modifier = Modifier.fillMaxSize()
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            HeaderSection(
+                title = "Ofertas vistas",
+                subtitle = "Decida o que fazer com as ofertas pendentes."
             )
-
-            filteredOffers.isEmpty() -> EmptyState(
-                title = "Nenhuma oferta pendente",
-                message = "As proximas ofertas detectadas pelo KM One aparecerao aqui.",
-                actionLabel = "Atualizar",
-                onAction = onRefresh
-            )
-
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                item {
-                    SeenOffersHeaderActions(
-                        pendingCount = filteredOffers.size,
-                        onClearPending = {
-                            expandedSeenOfferId = null
-                            onClearPending(filteredOffers.map { it.id })
-                        }
-                    )
+            when {
+                state.isLoading && state.offers.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = KmOnePalette.Neon)
                 }
-                items(uiModels, key = { it.id }) { uiModel ->
-                    val offer = offerById[uiModel.id] ?: return@items
-                    SeenOfferCard(
-                        offer = offer,
-                        uiModel = uiModel,
-                        expanded = expandedSeenOfferId == offer.id,
-                        onToggleExpanded = {
-                            expandedSeenOfferId = if (expandedSeenOfferId == offer.id) null else offer.id
-                        },
-                        onSave = {
-                            expandedSeenOfferId = null
-                            onSave(offer.id)
-                        },
-                        onIgnore = {
-                            expandedSeenOfferId = null
-                            onIgnore(offer.id)
-                        }
-                    )
+
+                state.errorMessage != null -> EmptyState(
+                    title = "Nao foi possivel carregar",
+                    message = state.errorMessage,
+                    actionLabel = "Tentar novamente",
+                    onAction = { onRefresh(null) }
+                )
+
+                filteredOffers.isEmpty() -> EmptyState(
+                    title = "Nenhuma oferta pendente",
+                    message = "As proximas ofertas detectadas pelo KM One aparecerao aqui.",
+                    actionLabel = "Atualizar",
+                    onAction = { onRefresh(null) }
+                )
+
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    item {
+                        SeenOffersHeaderActions(
+                            pendingCount = filteredOffers.size,
+                            onClearPending = {
+                                expandedSeenOfferId = null
+                                onClearPending(filteredOffers.map { it.id })
+                            }
+                        )
+                    }
+                    items(uiModels, key = { it.id }) { uiModel ->
+                        val offer = offerById[uiModel.id] ?: return@items
+                        SeenOfferCard(
+                            offer = offer,
+                            uiModel = uiModel,
+                            expanded = expandedSeenOfferId == offer.id,
+                            onToggleExpanded = {
+                                expandedSeenOfferId = if (expandedSeenOfferId == offer.id) null else offer.id
+                            },
+                            onSave = {
+                                expandedSeenOfferId = null
+                                onSave(offer.id)
+                            },
+                            onIgnore = {
+                                expandedSeenOfferId = null
+                                onIgnore(offer.id)
+                            }
+                        )
+                    }
                 }
             }
         }

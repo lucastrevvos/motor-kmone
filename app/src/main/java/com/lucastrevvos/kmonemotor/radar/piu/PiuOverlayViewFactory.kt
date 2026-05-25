@@ -10,6 +10,7 @@ import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.TextView
 import com.lucastrevvos.kmonemotor.R
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -33,7 +34,7 @@ class AndroidPiuOverlayViewFactory(
 ) : PiuOverlayViewFactory {
     override fun create(initialEarningsText: String): PiuOverlayViewHandle {
         val density = context.resources.displayMetrics.density
-        val minimumContainerWidth = (92 * density).roundToInt()
+        val minimumContainerWidth = (136 * density).roundToInt()
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -62,6 +63,15 @@ class AndroidPiuOverlayViewFactory(
                 setColor(Color.argb(255, 91, 255, 154))
             }
         }
+        val earningsTextView = TextView(context).apply {
+            text = initialEarningsText
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            setSingleLine()
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = (8 * density).roundToInt()
+            }
+        }
         val analyzeButton = ImageButton(context).apply {
             contentDescription = "Analisar"
             minimumHeight = 0
@@ -87,6 +97,7 @@ class AndroidPiuOverlayViewFactory(
         }
         container.contentDescription = "Radar KM One. Total do dia $initialEarningsText"
         container.addView(statusIndicator)
+        container.addView(earningsTextView)
         container.addView(analyzeButton)
         container.measure(
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
@@ -97,6 +108,7 @@ class AndroidPiuOverlayViewFactory(
         return AndroidPiuOverlayViewHandle(
             rootView = container,
             statusIndicator = statusIndicator,
+            earningsTextView = earningsTextView,
             analyzeButton = analyzeButton,
             estimatedWidthPx = estimatedWidth
         )
@@ -106,6 +118,7 @@ class AndroidPiuOverlayViewFactory(
 private class AndroidPiuOverlayViewHandle(
     private val rootView: View,
     private val statusIndicator: View,
+    private val earningsTextView: TextView,
     private val analyzeButton: ImageButton,
     override val estimatedWidthPx: Int
 ) : PiuOverlayViewHandle {
@@ -114,6 +127,7 @@ private class AndroidPiuOverlayViewHandle(
         get() = rootView.width.takeIf { it > 0 } ?: estimatedWidthPx
 
     override fun updateEarningsText(value: String) {
+        earningsTextView.text = value
         rootView.contentDescription = "Radar KM One. Total do dia $value"
     }
 
