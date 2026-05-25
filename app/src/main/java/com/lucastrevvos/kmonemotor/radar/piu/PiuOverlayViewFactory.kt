@@ -4,6 +4,7 @@ import android.content.res.ColorStateList
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -34,7 +35,7 @@ class AndroidPiuOverlayViewFactory(
 ) : PiuOverlayViewFactory {
     override fun create(initialEarningsText: String): PiuOverlayViewHandle {
         val density = context.resources.displayMetrics.density
-        val minimumContainerWidth = (136 * density).roundToInt()
+        val minimumContainerWidth = (156 * density).roundToInt()
         val container = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -66,10 +67,12 @@ class AndroidPiuOverlayViewFactory(
         val earningsTextView = TextView(context).apply {
             text = initialEarningsText
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 18f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
             setSingleLine()
+            ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = (8 * density).roundToInt()
+                marginEnd = (10 * density).roundToInt()
             }
         }
         val analyzeButton = ImageButton(context).apply {

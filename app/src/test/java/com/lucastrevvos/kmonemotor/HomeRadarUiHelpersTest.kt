@@ -18,6 +18,26 @@ class HomeRadarUiHelpersTest {
     }
 
     @Test
+    fun trackingIdle_usesIniciarTrackingLabel() {
+        assertEquals("Iniciar tracking", trackingPrimaryButtonLabel(TrackingUiStatus.IDLE))
+    }
+
+    @Test
+    fun trackingRunning_exposesFinishAndCancelLabels() {
+        assertEquals(listOf("Encerrar e salvar", "Cancelar"), trackingRunningActionLabels())
+    }
+
+    @Test
+    fun displacementType_usesDeslocamentoLabel() {
+        assertEquals("Deslocamento", trackingTypeLabel(TrackingSaveType.DISPLACEMENT))
+    }
+
+    @Test
+    fun privateRideType_usesCorridaParticularLabel() {
+        assertEquals("Corrida particular", trackingTypeLabel(TrackingSaveType.PRIVATE_RIDE))
+    }
+
+    @Test
     fun visibleHomeSeenOffers_excludesIgnoredOffers() {
         val visible = visibleHomeSeenOffers(
             listOf(

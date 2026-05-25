@@ -164,6 +164,21 @@ private data class HomeUiState(
     val errorMessage: String? = null
 )
 
+internal enum class TrackingUiStatus {
+    IDLE,
+    RUNNING
+}
+
+internal enum class TrackingSaveType {
+    DISPLACEMENT,
+    PRIVATE_RIDE
+}
+
+private data class TrackingUiSession(
+    val status: TrackingUiStatus = TrackingUiStatus.IDLE,
+    val startedAtMs: Long? = null
+)
+
 private sealed class RecordsListItem {
     abstract val stableId: String
     abstract val timestampMs: Long
@@ -971,6 +986,9 @@ private fun HomeDashboardFinalTab(
                 }
             }
             item {
+                TrackingLiveCard()
+            }
+            item {
                 HomeRecentActivityCard(
                     recentActivity = recentActivity,
                     onOpenSeen = onOpenSeen,
@@ -981,14 +999,6 @@ private fun HomeDashboardFinalTab(
                 HomeShortcutGrid(
                     onOpenRecords = onOpenRecords,
                     onOpenSeen = onOpenSeen
-                )
-            }
-            item {
-                AnalyzeOfferCta(
-                    isServiceActive = debugState.serviceActive,
-                    isOverlayPermissionGranted = debugState.piuOverlayPermissionGranted,
-                    isRadarVisible = debugState.piuOverlayShowing,
-                    onToggleRadar = onToggleRadar
                 )
             }
             item {
@@ -2827,6 +2837,259 @@ private fun SummaryMetricPanel(
 }
 
 @Composable
+private fun TrackingLiveCard() {
+    var session by remember { mutableStateOf(TrackingUiSession()) }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    var showSaveTypeDialog by remember { mutableStateOf(false) }
+    var selectedSaveType by remember { mutableStateOf<TrackingSaveType?>(null) }
+    var privateRideAmountText by remember { mutableStateOf("") }
+    val elapsedMs = session.startedAtMs?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
+
+    LaunchedEffect(session.status, session.startedAtMs) {
+        if (session.status != TrackingUiStatus.RUNNING || session.startedAtMs == null) return@LaunchedEffect
+        while (session.status == TrackingUiStatus.RUNNING) {
+            nowMs = System.currentTimeMillis()
+            delay(1000L)
+        }
+    }
+
+    if (showSaveTypeDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showSaveTypeDialog = false
+                selectedSaveType = null
+                privateRideAmountText = ""
+            },
+            title = { Text("Como deseja salvar?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Selecione o tipo do tracking encerrado. A persistencia final entra na proxima etapa.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                selectedSaveType = TrackingSaveType.DISPLACEMENT
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_UI_SAVE_TYPE_SELECTED",
+                                    "type" to TrackingSaveType.DISPLACEMENT.name
+                                )
+                            },
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (selectedSaveType == TrackingSaveType.DISPLACEMENT) KmOnePalette.Neon else KmOnePalette.Line
+                            )
+                        ) {
+                            Text(trackingTypeLabel(TrackingSaveType.DISPLACEMENT))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                selectedSaveType = TrackingSaveType.PRIVATE_RIDE
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_UI_SAVE_TYPE_SELECTED",
+                                    "type" to TrackingSaveType.PRIVATE_RIDE.name
+                                )
+                            },
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (selectedSaveType == TrackingSaveType.PRIVATE_RIDE) KmOnePalette.Neon else KmOnePalette.Line
+                            )
+                        ) {
+                            Text(trackingTypeLabel(TrackingSaveType.PRIVATE_RIDE))
+                        }
+                    }
+                    if (selectedSaveType == TrackingSaveType.PRIVATE_RIDE) {
+                        OutlinedTextField(
+                            value = privateRideAmountText,
+                            onValueChange = { privateRideAmountText = it },
+                            label = { Text("Valor em R$") },
+                            singleLine = true,
+                            colors = darkInputColors()
+                        )
+                    }
+                    selectedSaveType?.let { saveType ->
+                        Text(
+                            text = if (saveType == TrackingSaveType.DISPLACEMENT) {
+                                "Deslocamento sera integrado aos Registros na proxima task."
+                            } else {
+                                "Corrida particular podera salvar valor e registro final na proxima task."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = KmOnePalette.TextSecondary
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showSaveTypeDialog = false
+                        session = TrackingUiSession()
+                        selectedSaveType = null
+                        privateRideAmountText = ""
+                    }
+                ) {
+                    Text("Fechar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveTypeDialog = false }) {
+                    Text("Cancelar")
+                }
+            },
+            containerColor = KmOnePalette.Card
+        )
+    }
+
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = Color(0xD90B1624),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x3327C87B))
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(180.dp)
+                    .background(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0x2200E676), Color.Transparent)
+                        )
+                    )
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x1A00E676))
+                                    .border(1.dp, KmOnePalette.Line, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ic_route),
+                                    contentDescription = "Tracking",
+                                    modifier = Modifier.size(18.dp),
+                                    colorFilter = ColorFilter.tint(KmOnePalette.Neon)
+                                )
+                            }
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = if (session.status == TrackingUiStatus.RUNNING) "Tracking em andamento" else "Tracking ao vivo",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = KmOnePalette.TextPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (session.status == TrackingUiStatus.RUNNING) {
+                                        "Use para marcar deslocamentos sem passageiro ou preparar corrida particular."
+                                    } else {
+                                        "Registre deslocamentos sem passageiro ou corridas particulares em tempo real."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = KmOnePalette.TextSecondary
+                                )
+                            }
+                        }
+                    }
+                    HomeStatusPill(
+                        text = if (session.status == TrackingUiStatus.RUNNING) "Rodando" else "Preparando",
+                        accent = if (session.status == TrackingUiStatus.RUNNING) KmOnePalette.Neon else KmOnePalette.Attention
+                    )
+                }
+
+                if (session.status == TrackingUiStatus.RUNNING) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        HomeStatusPill("Tipo: A definir", KmOnePalette.ElectricBlue)
+                        HomeStatusPill(formatTrackingElapsed(elapsedMs), KmOnePalette.Neon)
+                    }
+                    Text(
+                        text = "Km estimado: aguardando GPS real. Nesta etapa a UI ja prepara inicio, cancelamento e encerramento.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_FINISH_CLICKED")
+                                showSaveTypeDialog = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = KmOnePalette.Neon,
+                                contentColor = KmOnePalette.BackgroundDeep
+                            )
+                        ) {
+                            Text(trackingRunningActionLabels().first(), fontWeight = FontWeight.Bold)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_CANCELLED")
+                                session = TrackingUiSession()
+                                selectedSaveType = null
+                                privateRideAmountText = ""
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+                        ) {
+                            Text(trackingRunningActionLabels().last())
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Km inicial, km final e tempo rodado entram aqui. A persistencia em Registros sera conectada na proxima etapa.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                    Button(
+                        onClick = {
+                            RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_START_CLICKED")
+                            val startedAt = System.currentTimeMillis()
+                            nowMs = startedAt
+                            session = TrackingUiSession(
+                                status = TrackingUiStatus.RUNNING,
+                                startedAtMs = startedAt
+                            )
+                        },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = KmOnePalette.Neon,
+                            contentColor = KmOnePalette.BackgroundDeep
+                        )
+                    ) {
+                        Text(trackingPrimaryButtonLabel(TrackingUiStatus.IDLE), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AnalyzeOfferCta(
     isServiceActive: Boolean,
     isOverlayPermissionGranted: Boolean,
@@ -3973,6 +4236,29 @@ internal fun homeRadarActionLabel(isRadarVisible: Boolean): String {
 
 internal fun homeRadarActionIconRes(isRadarVisible: Boolean): Int {
     return if (isRadarVisible) R.drawable.ic_close else R.drawable.ic_eye
+}
+
+internal fun trackingPrimaryButtonLabel(status: TrackingUiStatus): String {
+    return if (status == TrackingUiStatus.IDLE) "Iniciar tracking" else "Tracking ativo"
+}
+
+internal fun trackingRunningActionLabels(): List<String> {
+    return listOf("Encerrar e salvar", "Cancelar")
+}
+
+internal fun trackingTypeLabel(type: TrackingSaveType): String {
+    return when (type) {
+        TrackingSaveType.DISPLACEMENT -> "Deslocamento"
+        TrackingSaveType.PRIVATE_RIDE -> "Corrida particular"
+    }
+}
+
+private fun formatTrackingElapsed(elapsedMs: Long): String {
+    val totalSeconds = (elapsedMs / 1000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3600L
+    val minutes = (totalSeconds % 3600L) / 60L
+    val seconds = totalSeconds % 60L
+    return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
 }
 
 private fun platformAccent(platform: RidePlatform): Color {
