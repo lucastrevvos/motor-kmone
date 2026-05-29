@@ -122,6 +122,43 @@ class HomeDailySummaryProviderTest {
     }
 
     @Test
+    fun privateRideSavedRide_increasesEarnedToday() {
+        val provider = provider(goal = 150.0)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = listOf(
+                savedRide(
+                    id = "private-ride",
+                    price = 35.0,
+                    pickupDistanceKm = null,
+                    tripDistanceKm = null,
+                    totalDistanceKm = 6.4,
+                    acceptedAtMs = nowMs,
+                    source = SavedRideSource.PRIVATE_RIDE
+                )
+            ),
+            nowMs = nowMs
+        )
+
+        assertEquals(35.0, summary.earnedToday, 0.001)
+        assertEquals(6.4, summary.totalKmToday ?: 0.0, 0.001)
+    }
+
+    @Test
+    fun displacementWithoutSavedRide_doesNotIncreaseEarnedToday() {
+        val provider = provider(goal = 150.0)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = emptyList(),
+            nowMs = nowMs
+        )
+
+        assertEquals(0.0, summary.earnedToday, 0.001)
+    }
+
+    @Test
     fun progressFraction_clampsAtOneWhenGoalIsExceeded() {
         val provider = provider(goal = 300.0)
 
@@ -224,7 +261,8 @@ class HomeDailySummaryProviderTest {
         pickupDistanceKm: Double? = 1.0,
         tripDistanceKm: Double? = 3.0,
         totalDistanceKm: Double?,
-        acceptedAtMs: Long
+        acceptedAtMs: Long,
+        source: SavedRideSource = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
     ) = SavedRide(
         id = id,
         sourceSeenOfferId = null,
@@ -243,6 +281,6 @@ class HomeDailySummaryProviderTest {
         acceptedAtMs = acceptedAtMs,
         createdAtMs = acceptedAtMs,
         updatedAtMs = acceptedAtMs,
-        source = SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT
+        source = source
     )
 }

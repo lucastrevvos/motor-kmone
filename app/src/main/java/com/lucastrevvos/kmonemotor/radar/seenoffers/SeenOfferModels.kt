@@ -16,7 +16,8 @@ enum class SeenOfferStatus {
 
 enum class SavedRideSource {
     SEEN_OFFER_MANUAL_ACCEPT,
-    MANUAL_ENTRY
+    MANUAL_ENTRY,
+    PRIVATE_RIDE
 }
 
 data class SeenOffer(

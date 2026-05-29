@@ -3,6 +3,8 @@ package com.lucastrevvos.kmonemotor
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
+import com.lucastrevvos.kmonemotor.radar.tracking.TrackingGpsStatus
+import com.lucastrevvos.kmonemotor.radar.tracking.trackingGpsStatusLabel
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -35,6 +37,11 @@ class HomeRadarUiHelpersTest {
     @Test
     fun privateRideType_usesCorridaParticularLabel() {
         assertEquals("Corrida particular", trackingTypeLabel(TrackingSaveType.PRIVATE_RIDE))
+    }
+
+    @Test
+    fun missingPermissionGpsStatus_usesWaitingPermissionLabel() {
+        assertEquals("GPS: aguardando permissao", trackingGpsStatusLabel(TrackingGpsStatus.WAITING_PERMISSION))
     }
 
     @Test

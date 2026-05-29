@@ -1,6 +1,8 @@
 package com.lucastrevvos.kmonemotor
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -8,6 +10,9 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,6 +55,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -99,6 +105,15 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiMapper
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiModel
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffersUiState
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecord
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordFactory
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordType
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordUiMapper
+import com.lucastrevvos.kmonemotor.radar.tracking.AndroidTrackingLocationClient
+import com.lucastrevvos.kmonemotor.radar.tracking.TrackingDistanceCalculator
+import com.lucastrevvos.kmonemotor.radar.tracking.TrackingDistanceState
+import com.lucastrevvos.kmonemotor.radar.tracking.TrackingGpsStatus
+import com.lucastrevvos.kmonemotor.radar.tracking.trackingGpsStatusLabel
 import com.lucastrevvos.kmonemotor.ui.theme.KMONEMotorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -177,7 +192,10 @@ internal enum class TrackingSaveType {
 
 private data class TrackingUiSession(
     val status: TrackingUiStatus = TrackingUiStatus.IDLE,
-    val startedAtMs: Long? = null
+    val startedAtMs: Long? = null,
+    val distanceKm: Double = 0.0,
+    val pointCount: Int = 0,
+    val gpsStatus: TrackingGpsStatus = TrackingGpsStatus.IDLE
 )
 
 private sealed class RecordsListItem {
@@ -192,6 +210,11 @@ private sealed class RecordsListItem {
     data class FuelItem(val fuelEntry: FuelEntry) : RecordsListItem() {
         override val stableId: String = "fuel:${fuelEntry.id}"
         override val timestampMs: Long = fuelEntry.createdAtMs
+    }
+
+    data class TrackingItem(val trackingRecord: TrackingRecord) : RecordsListItem() {
+        override val stableId: String = "tracking:${trackingRecord.id}"
+        override val timestampMs: Long = trackingRecord.endedAtMs
     }
 }
 
@@ -218,6 +241,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     var seenState by remember { mutableStateOf(SeenOffersUiState(isLoading = true)) }
     var savedRides by remember { mutableStateOf<List<SavedRide>>(emptyList()) }
     var fuelEntries by remember { mutableStateOf<List<FuelEntry>>(emptyList()) }
+    var trackingRecords by remember { mutableStateOf<List<TrackingRecord>>(emptyList()) }
     var ridesLoading by remember { mutableStateOf(true) }
     var ridesError by remember { mutableStateOf<String?>(null) }
     var homeState by remember { mutableStateOf(HomeUiState(isLoading = true)) }
@@ -294,6 +318,18 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
         }
     }
 
+    suspend fun reloadTrackingRecords(): List<TrackingRecord> {
+        return runCatching {
+            module.trackingRecordRepository.list(limit = 500)
+        }.onSuccess { records ->
+            trackingRecords = records
+        }.onFailure {
+            trackingRecords = emptyList()
+        }.getOrElse {
+            emptyList()
+        }
+    }
+
     suspend fun reloadDriverSettings(): DriverSettings {
         return withContext(Dispatchers.IO) {
             module.driverSettingsRepository.getSettings()
@@ -310,6 +346,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
             val offers = reloadSeenOffers()
             val rides = reloadSavedRides()
             reloadFuelEntries()
+            reloadTrackingRecords()
             val summary = withContext(Dispatchers.Default) {
                 homeSummaryProvider.summarize(
                     seenOffers = offers,
@@ -412,6 +449,36 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                         seenOffers = seenState.offers,
                         savedRides = savedRides,
                         fuelEntries = fuelEntries,
+                        onSaveTrackingRecord = { record ->
+                            coroutineScope.launch {
+                                val savedRecord = module.trackingRecordRepository.save(record)
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_RECORD_SAVED",
+                                    "id" to savedRecord.id,
+                                    "type" to savedRecord.type,
+                                    "durationSeconds" to savedRecord.durationSeconds,
+                                    "distanceKm" to savedRecord.distanceKm,
+                                    "amount" to savedRecord.amount
+                                )
+                                if (savedRecord.type == TrackingRecordType.PRIVATE_RIDE &&
+                                    TrackingRecordFactory.isValidPrivateRideAmount(savedRecord.amount)
+                                ) {
+                                    val savedRide = createSavedRideFromPrivateTracking(savedRecord)
+                                    withContext(Dispatchers.IO) {
+                                        module.savedRideRepository.saveRide(savedRide)
+                                    }
+                                    RadarLogger.i(
+                                        "KM_V2_TRACKING",
+                                        "KM_V2_TRACKING_PRIVATE_RIDE_SAVED_RIDE_CREATED",
+                                        "trackingRecordId" to savedRecord.id,
+                                        "savedRideId" to savedRide.id,
+                                        "amount" to savedRecord.amount
+                                    )
+                                }
+                                refreshAll()
+                            }
+                        },
                         onToggleRadar = {
                             val currentVisible = debugState.piuOverlayShowing
                             val targetVisible = !currentVisible
@@ -556,6 +623,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                 AppTab.RIDES -> RecordsTab(
                     rides = savedRides,
                     fuelEntries = fuelEntries,
+                    trackingRecords = trackingRecords,
                     isLoading = ridesLoading,
                     error = ridesError,
                     recordsSummaryProvider = recordsSummaryProvider,
@@ -886,6 +954,7 @@ private fun HomeDashboardFinalTab(
     seenOffers: List<SeenOffer>,
     savedRides: List<SavedRide>,
     fuelEntries: List<FuelEntry>,
+    onSaveTrackingRecord: (TrackingRecord) -> Unit,
     onToggleRadar: () -> Unit,
     onConfigureGoal: () -> Unit,
     onOpenSeen: () -> Unit,
@@ -1012,7 +1081,7 @@ private fun HomeDashboardFinalTab(
                 }
             }
             item {
-                TrackingLiveCard()
+                TrackingLiveCard(onSaveTrackingRecord = onSaveTrackingRecord)
             }
             item {
                 HomeRecentActivityCard(
@@ -1740,6 +1809,7 @@ private fun SeenOffersTab(
 private fun RecordsTab(
     rides: List<SavedRide>,
     fuelEntries: List<FuelEntry>,
+    trackingRecords: List<TrackingRecord>,
     isLoading: Boolean,
     error: String?,
     recordsSummaryProvider: RecordsSummaryProvider,
@@ -1751,7 +1821,7 @@ private fun RecordsTab(
     onDeleteFuelEntry: (String) -> Unit
 ) {
     var period by remember { mutableStateOf(RecordsPeriodFilter.DAY) }
-    var expandedItemId by remember(rides, fuelEntries, period) { mutableStateOf<String?>(null) }
+    var expandedItemId by remember(rides, fuelEntries, trackingRecords, period) { mutableStateOf<String?>(null) }
     var editingRide by remember { mutableStateOf<SavedRide?>(null) }
     var editingFuelEntry by remember { mutableStateOf<FuelEntry?>(null) }
     var deleteConfirmationRide by remember { mutableStateOf<SavedRide?>(null) }
@@ -1761,11 +1831,21 @@ private fun RecordsTab(
     val filteredRides = remember(rides, period) {
         recordsSummaryProvider.filterRides(rides, period)
     }
+    val displayRides = remember(filteredRides) {
+        filteredRides.filterNot { it.source == SavedRideSource.PRIVATE_RIDE }
+    }
     val filteredFuelEntries = remember(fuelEntries, period) {
         recordsSummaryProvider.filterFuelEntries(fuelEntries, period)
     }
-    val recordsItems = remember(filteredRides, filteredFuelEntries) {
-        (filteredRides.map(RecordsListItem::RideItem) + filteredFuelEntries.map(RecordsListItem::FuelItem))
+    val filteredTrackingRecords = remember(trackingRecords, period) {
+        filterTrackingRecords(trackingRecords, period)
+    }
+    val recordsItems = remember(displayRides, filteredFuelEntries, filteredTrackingRecords) {
+        (
+            displayRides.map(RecordsListItem::RideItem) +
+                filteredFuelEntries.map(RecordsListItem::FuelItem) +
+                filteredTrackingRecords.map(RecordsListItem::TrackingItem)
+            )
             .sortedByDescending { it.timestampMs }
     }
     val summary = remember(rides, fuelEntries, period) {
@@ -1840,7 +1920,7 @@ private fun RecordsTab(
                     item {
                         EmptyStateCard(
                             title = "Nenhum registro neste periodo",
-                            message = "Corridas e abastecimentos aparecerao aqui."
+                            message = "Corridas, tracking e abastecimentos aparecerao aqui."
                         )
                     }
                 } else {
@@ -1894,6 +1974,11 @@ private fun RecordsTab(
                                     )
                                     deleteConfirmationFuelEntry = item.fuelEntry
                                 }
+                            )
+
+                            is RecordsListItem.TrackingItem -> TrackingRecordCard(
+                                record = item.trackingRecord,
+                                period = period
                             )
                         }
                     }
@@ -2863,13 +2948,113 @@ private fun SummaryMetricPanel(
 }
 
 @Composable
-private fun TrackingLiveCard() {
+private fun TrackingLiveCard(
+    onSaveTrackingRecord: (TrackingRecord) -> Unit
+) {
+    val context = LocalContext.current
+    val locationClient = remember(context) { AndroidTrackingLocationClient(context) }
+    val distanceCalculator = remember { TrackingDistanceCalculator() }
     var session by remember { mutableStateOf(TrackingUiSession()) }
+    var distanceState by remember { mutableStateOf(TrackingDistanceState()) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     var showSaveTypeDialog by remember { mutableStateOf(false) }
     var selectedSaveType by remember { mutableStateOf<TrackingSaveType?>(null) }
     var privateRideAmountText by remember { mutableStateOf("") }
+    var privateRideAmountError by remember { mutableStateOf<String?>(null) }
+    var pendingEndedAtMs by remember { mutableStateOf<Long?>(null) }
     val elapsedMs = session.startedAtMs?.let { (nowMs - it).coerceAtLeast(0L) } ?: 0L
+
+    fun hasLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+    }
+
+    fun stopGps(reason: String) {
+        locationClient.stop()
+        RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_GPS_STOPPED", "reason" to reason)
+    }
+
+    fun startTrackingSession(startedAt: Long) {
+        distanceState = TrackingDistanceState(gpsStatus = TrackingGpsStatus.WAITING_FIRST_FIX)
+        session = TrackingUiSession(
+            status = TrackingUiStatus.RUNNING,
+            startedAtMs = startedAt,
+            gpsStatus = TrackingGpsStatus.WAITING_FIRST_FIX
+        )
+        val started = locationClient.start(
+            onPoint = { point ->
+                val update = distanceCalculator.addPoint(distanceState, point)
+                distanceState = update.state
+                session = session.copy(
+                    distanceKm = update.state.distanceKm,
+                    pointCount = update.state.pointCount,
+                    gpsStatus = update.state.gpsStatus
+                )
+                if (update.accepted) {
+                    if (update.reason == "first_fix") {
+                        RadarLogger.i(
+                            "KM_V2_TRACKING",
+                            "KM_V2_TRACKING_GPS_FIRST_FIX",
+                            "accuracyMeters" to update.accuracyMeters
+                        )
+                    }
+                    RadarLogger.i(
+                        "KM_V2_TRACKING",
+                        "KM_V2_TRACKING_GPS_POINT_ACCEPTED",
+                        "accuracyMeters" to update.accuracyMeters,
+                        "deltaMeters" to update.deltaMeters,
+                        "distanceKm" to update.state.distanceKm,
+                        "pointCount" to update.state.pointCount
+                    )
+                } else {
+                    RadarLogger.i(
+                        "KM_V2_TRACKING",
+                        "KM_V2_TRACKING_GPS_POINT_REJECTED",
+                        "reason" to update.reason,
+                        "accuracyMeters" to update.accuracyMeters,
+                        "deltaMeters" to update.deltaMeters
+                    )
+                }
+            },
+            onStatus = { status ->
+                session = session.copy(gpsStatus = status)
+            },
+            onError = { error ->
+                session = session.copy(gpsStatus = TrackingGpsStatus.ERROR)
+                RadarLogger.w(
+                    "KM_V2_TRACKING",
+                    "KM_V2_TRACKING_GPS_ERROR",
+                    "error" to (error.message ?: error::class.java.simpleName)
+                )
+            }
+        )
+        if (started) {
+            RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_GPS_STARTED", "startedAtMs" to startedAt)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        RadarLogger.i(
+            "KM_V2_TRACKING",
+            "KM_V2_TRACKING_LOCATION_PERMISSION_RESULT",
+            "granted" to granted
+        )
+        if (granted) {
+            startTrackingSession(session.startedAtMs ?: System.currentTimeMillis())
+        } else {
+            session = session.copy(gpsStatus = TrackingGpsStatus.PERMISSION_DENIED)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            locationClient.stop()
+        }
+    }
 
     LaunchedEffect(session.status, session.startedAtMs) {
         if (session.status != TrackingUiStatus.RUNNING || session.startedAtMs == null) return@LaunchedEffect
@@ -2885,21 +3070,28 @@ private fun TrackingLiveCard() {
                 showSaveTypeDialog = false
                 selectedSaveType = null
                 privateRideAmountText = ""
+                privateRideAmountError = null
             },
             title = { Text("Como deseja salvar?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Selecione o tipo do tracking encerrado. A persistencia final entra na proxima etapa.",
+                        text = "Selecione o tipo do tracking encerrado para salvar em Registros.",
                         style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "Duracao: ${formatTrackingElapsed(((pendingEndedAtMs ?: nowMs) - (session.startedAtMs ?: nowMs)).coerceAtLeast(0L))}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(
                             onClick = {
                                 selectedSaveType = TrackingSaveType.DISPLACEMENT
+                                privateRideAmountError = null
                                 RadarLogger.i(
                                     "KM_V2_TRACKING",
-                                    "KM_V2_TRACKING_UI_SAVE_TYPE_SELECTED",
+                                    "KM_V2_TRACKING_SAVE_TYPE_SELECTED",
                                     "type" to TrackingSaveType.DISPLACEMENT.name
                                 )
                             },
@@ -2915,7 +3107,7 @@ private fun TrackingLiveCard() {
                                 selectedSaveType = TrackingSaveType.PRIVATE_RIDE
                                 RadarLogger.i(
                                     "KM_V2_TRACKING",
-                                    "KM_V2_TRACKING_UI_SAVE_TYPE_SELECTED",
+                                    "KM_V2_TRACKING_SAVE_TYPE_SELECTED",
                                     "type" to TrackingSaveType.PRIVATE_RIDE.name
                                 )
                             },
@@ -2930,18 +3122,27 @@ private fun TrackingLiveCard() {
                     if (selectedSaveType == TrackingSaveType.PRIVATE_RIDE) {
                         OutlinedTextField(
                             value = privateRideAmountText,
-                            onValueChange = { privateRideAmountText = it },
+                            onValueChange = {
+                                privateRideAmountText = it
+                                privateRideAmountError = null
+                            },
                             label = { Text("Valor em R$") },
                             singleLine = true,
+                            isError = privateRideAmountError != null,
+                            supportingText = {
+                                privateRideAmountError?.let {
+                                    Text(it, color = KmOnePalette.Negative)
+                                }
+                            },
                             colors = darkInputColors()
                         )
                     }
                     selectedSaveType?.let { saveType ->
                         Text(
                             text = if (saveType == TrackingSaveType.DISPLACEMENT) {
-                                "Deslocamento sera integrado aos Registros na proxima task."
+                                "Sera salvo sem receita e sem distancia medida nesta etapa."
                             } else {
-                                "Corrida particular podera salvar valor e registro final na proxima task."
+                                "Sera salvo em Registros e somado ao total do dia."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = KmOnePalette.TextSecondary
@@ -2952,17 +3153,52 @@ private fun TrackingLiveCard() {
             confirmButton = {
                 TextButton(
                     onClick = {
+                        val saveType = selectedSaveType ?: return@TextButton
+                        val startedAt = session.startedAtMs ?: return@TextButton
+                        val endedAt = pendingEndedAtMs ?: System.currentTimeMillis()
+                        val amount = if (saveType == TrackingSaveType.PRIVATE_RIDE) {
+                            parsePositiveOrNull(privateRideAmountText)
+                        } else {
+                            null
+                        }
+                        if (saveType == TrackingSaveType.PRIVATE_RIDE &&
+                            !TrackingRecordFactory.isValidPrivateRideAmount(amount)
+                        ) {
+                            privateRideAmountError = "Informe um valor valido"
+                            return@TextButton
+                        }
+                        val recordType = when (saveType) {
+                            TrackingSaveType.DISPLACEMENT -> TrackingRecordType.DISPLACEMENT
+                            TrackingSaveType.PRIVATE_RIDE -> TrackingRecordType.PRIVATE_RIDE
+                        }
+                        val record = TrackingRecordFactory.create(
+                            type = recordType,
+                            startedAtMs = startedAt,
+                            endedAtMs = endedAt,
+                            distanceKm = session.distanceKm.takeIf { it > 0.0 },
+                            amount = amount,
+                            createdAtMs = System.currentTimeMillis()
+                        )
+                        onSaveTrackingRecord(record)
                         showSaveTypeDialog = false
                         session = TrackingUiSession()
+                        distanceState = TrackingDistanceState()
                         selectedSaveType = null
                         privateRideAmountText = ""
+                        privateRideAmountError = null
+                        pendingEndedAtMs = null
                     }
+                    ,
+                    enabled = selectedSaveType != null
                 ) {
-                    Text("Fechar")
+                    Text("Salvar")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSaveTypeDialog = false }) {
+                TextButton(onClick = {
+                    showSaveTypeDialog = false
+                    privateRideAmountError = null
+                }) {
                     Text("Cancelar")
                 }
             },
@@ -3047,18 +3283,30 @@ private fun TrackingLiveCard() {
 
                 if (session.status == TrackingUiStatus.RUNNING) {
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        HomeStatusPill("Tipo: A definir", KmOnePalette.ElectricBlue)
+                        HomeStatusPill(trackingGpsStatusLabel(session.gpsStatus), KmOnePalette.ElectricBlue)
                         HomeStatusPill(formatTrackingElapsed(elapsedMs), KmOnePalette.Neon)
+                        HomeStatusPill(formatKmCompact(session.distanceKm), KmOnePalette.Attention)
                     }
                     Text(
-                        text = "Km estimado: aguardando GPS real. Nesta etapa a UI ja prepara inicio, cancelamento e encerramento.",
+                        text = "Distancia ao vivo: ${formatKm(session.distanceKm)} • pontos GPS: ${session.pointCount}",
                         style = MaterialTheme.typography.bodySmall,
                         color = KmOnePalette.TextSecondary
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
                             onClick = {
-                                RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_FINISH_CLICKED")
+                                val endedAt = System.currentTimeMillis()
+                                pendingEndedAtMs = endedAt
+                                stopGps("finished")
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_FINISH_REQUESTED",
+                                    "startedAtMs" to session.startedAtMs,
+                                    "endedAtMs" to endedAt,
+                                    "durationSeconds" to session.startedAtMs?.let {
+                                        TrackingRecordFactory.durationSeconds(it, endedAt)
+                                    }
+                                )
                                 showSaveTypeDialog = true
                             },
                             modifier = Modifier.weight(1f),
@@ -3072,10 +3320,22 @@ private fun TrackingLiveCard() {
                         }
                         OutlinedButton(
                             onClick = {
-                                RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_CANCELLED")
+                                val cancelledAt = System.currentTimeMillis()
+                                stopGps("cancelled")
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_CANCELLED",
+                                    "startedAtMs" to session.startedAtMs,
+                                    "durationSeconds" to session.startedAtMs?.let {
+                                        TrackingRecordFactory.durationSeconds(it, cancelledAt)
+                                    }
+                                )
                                 session = TrackingUiSession()
+                                distanceState = TrackingDistanceState()
                                 selectedSaveType = null
                                 privateRideAmountText = ""
+                                privateRideAmountError = null
+                                pendingEndedAtMs = null
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(18.dp),
@@ -3087,19 +3347,38 @@ private fun TrackingLiveCard() {
                     }
                 } else {
                     Text(
-                        text = "Km inicial, km final e tempo rodado entram aqui. A persistencia em Registros sera conectada na proxima etapa.",
+                        text = "Km inicial e final ainda nao usam GPS. O registro salvo entra em Registros.",
                         style = MaterialTheme.typography.bodySmall,
                         color = KmOnePalette.TextSecondary
                     )
                     Button(
                         onClick = {
-                            RadarLogger.i("KM_V2_TRACKING", "KM_V2_TRACKING_UI_START_CLICKED")
                             val startedAt = System.currentTimeMillis()
-                            nowMs = startedAt
-                            session = TrackingUiSession(
-                                status = TrackingUiStatus.RUNNING,
-                                startedAtMs = startedAt
+                            RadarLogger.i(
+                                "KM_V2_TRACKING",
+                                "KM_V2_TRACKING_STARTED",
+                                "startedAtMs" to startedAt
                             )
+                            nowMs = startedAt
+                            if (hasLocationPermission()) {
+                                startTrackingSession(startedAt)
+                            } else {
+                                session = TrackingUiSession(
+                                    status = TrackingUiStatus.RUNNING,
+                                    startedAtMs = startedAt,
+                                    gpsStatus = TrackingGpsStatus.WAITING_PERMISSION
+                                )
+                                RadarLogger.i(
+                                    "KM_V2_TRACKING",
+                                    "KM_V2_TRACKING_LOCATION_PERMISSION_REQUESTED"
+                                )
+                                permissionLauncher.launch(
+                                    arrayOf(
+                                        Manifest.permission.ACCESS_FINE_LOCATION,
+                                        Manifest.permission.ACCESS_COARSE_LOCATION
+                                    )
+                                )
+                            }
                         },
                         shape = RoundedCornerShape(18.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -4147,6 +4426,66 @@ private fun KmOneBottomBar(
     }
 }
 
+@Composable
+private fun TrackingRecordCard(
+    record: TrackingRecord,
+    period: RecordsPeriodFilter
+) {
+    val model = remember(record) { TrackingRecordUiMapper.map(record) }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0x3327C87B))
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        StatusChip(
+                            text = "Tracking",
+                            background = Color(0x1F27C87B),
+                            textColor = KmOnePalette.Neon
+                        )
+                        StatusChip(
+                            text = model.revenueLabel,
+                            background = Color(0x1AFFFFFF),
+                            textColor = if (record.type == TrackingRecordType.PRIVATE_RIDE) KmOnePalette.Positive else KmOnePalette.TextSecondary
+                        )
+                    }
+                    Text(
+                        text = model.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = KmOnePalette.TextPrimary
+                    )
+                    Text(
+                        text = model.amountLabel ?: "Sem receita",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (model.amountLabel != null) KmOnePalette.TextPrimary else KmOnePalette.TextSecondary
+                    )
+                }
+                Text(
+                    text = formatRecordStamp(record.endedAtMs, period),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+            }
+            DividerLine()
+            DetailLine("Duracao", model.durationLabel)
+            DetailLine("Distancia", model.distanceLabel)
+        }
+    }
+}
+
 private data class HomeRecentActivity(
     val kindLabel: String,
     val opensSeen: Boolean,
@@ -4393,7 +4732,52 @@ private fun savedRideSourceLabel(source: SavedRideSource): String {
     return when (source) {
         SavedRideSource.SEEN_OFFER_MANUAL_ACCEPT -> "Oferta salva"
         SavedRideSource.MANUAL_ENTRY -> "Manual"
+        SavedRideSource.PRIVATE_RIDE -> "Corrida particular"
     }
+}
+
+private fun filterTrackingRecords(
+    records: List<TrackingRecord>,
+    period: RecordsPeriodFilter,
+    nowMs: Long = System.currentTimeMillis()
+): List<TrackingRecord> {
+    val zoneId = ZoneId.systemDefault()
+    val nowDate = Instant.ofEpochMilli(nowMs).atZone(zoneId).toLocalDate()
+    return records.filter { record ->
+        val date = Instant.ofEpochMilli(record.endedAtMs).atZone(zoneId).toLocalDate()
+        when (period) {
+            RecordsPeriodFilter.DAY -> date == nowDate
+            RecordsPeriodFilter.WEEK -> {
+                val startOfWeek = nowDate.minus((nowDate.dayOfWeek.value - 1).toLong(), ChronoUnit.DAYS)
+                !date.isBefore(startOfWeek) && !date.isAfter(nowDate)
+            }
+            RecordsPeriodFilter.MONTH -> date.year == nowDate.year && date.month == nowDate.month
+        }
+    }
+}
+
+private fun createSavedRideFromPrivateTracking(record: TrackingRecord): SavedRide {
+    val amount = record.amount ?: 0.0
+    return SavedRide(
+        id = java.util.UUID.randomUUID().toString(),
+        sourceSeenOfferId = record.id,
+        platform = RidePlatform.UNKNOWN,
+        price = amount,
+        valuePerKm = null,
+        pickupDistanceKm = null,
+        pickupTimeMin = null,
+        tripDistanceKm = record.distanceKm,
+        tripTimeMin = record.durationSeconds / 60.0,
+        totalDistanceKm = record.distanceKm,
+        estimatedTotalTimeMin = record.durationSeconds / 60.0,
+        productName = "Corrida particular",
+        originPreview = null,
+        destinationPreview = null,
+        acceptedAtMs = record.endedAtMs,
+        createdAtMs = record.createdAtMs,
+        updatedAtMs = record.createdAtMs,
+        source = SavedRideSource.PRIVATE_RIDE
+    )
 }
 
 @Composable
