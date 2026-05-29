@@ -286,6 +286,21 @@ class AutoMissDiagnostics(
                 !watchdogStartedAfterPreOffer &&
                 recent.none { it.timestampMs > lastRejectedPreOffer.timestampMs && it.stage in setOf("stabilization_started", "capture_approved") } ->
                 "watchdog_not_started_after_map_eta_pre_offer"
+            lastRejectedPreOffer != null &&
+                lastRejectedPreOffer.reason == "weak_tree_delta_visual_probe_candidate" &&
+                lastPreOfferAgeMs != null &&
+                lastPreOfferAgeMs > 3_000L &&
+                !watchdogStartedAfterPreOffer &&
+                recent.none { it.timestampMs > lastRejectedPreOffer.timestampMs && it.stage in setOf("stabilization_started", "capture_approved") } ->
+                "watchdog_not_started_after_weak_tree_delta"
+            lastRejectedPreOffer != null &&
+                lastRejectedPreOffer.reason == "weak_tree_delta_visual_probe_candidate" &&
+                lastPreOfferAgeMs != null &&
+                lastPreOfferAgeMs > 3_000L &&
+                watchdogStartedAfterPreOffer &&
+                lastUberWatchdogFailed != null &&
+                recent.none { it.timestampMs > lastUberWatchdogFailed.timestampMs && it.stage == "capture_approved" } ->
+                "watchdog_failed_after_weak_tree_delta"
             lastOperationalRejection != null &&
                 lastOperationalRejection.reason == "operational_earnings_money_without_offer_evidence" &&
                 lastOperationalRejectionAgeMs != null &&

@@ -39,6 +39,53 @@ class OfferParserTest {
     }
 
     @Test
+    fun manualUberCropWithKmOneHomeContext_ignoresGoalMoneyAndSelectsProductPrice() {
+        val rawText = "R$ 0,00 Sem base de ontem Meta diaria Faltam R$ 120,00 para bater a meta. " +
+            "Ocultar Radar UberX R$ 10,34 4,93 (221) 8 min (6.0 km) 6 min (3.8 km)"
+        val result = parser.process(
+            fingerprint = uberFingerprint(price = 10.34).copy(
+                priceCandidates = listOf(
+                    ExtractedNumericCandidate("R$ 120,00", 120.0, "BRL", "PRICE", 8),
+                    ExtractedNumericCandidate("R$ 10,34", 10.34, "BRL", "PRICE", 8),
+                    ExtractedNumericCandidate("R$ 120,00", 120.0, "BRL", "PRICE", 8)
+                ),
+                distanceCandidates = listOf(
+                    ExtractedNumericCandidate("6.0 km", 6.0, "km", "DISTANCE_KM", 8),
+                    ExtractedNumericCandidate("3.8 km", 3.8, "km", "DISTANCE_KM", 8)
+                ),
+                timeCandidates = listOf(
+                    ExtractedNumericCandidate("8 min", 8.0, "min", "TIME_MINUTES", 8),
+                    ExtractedNumericCandidate("6 min", 6.0, "min", "TIME_MINUTES", 8)
+                )
+            ),
+            ocrObservation = ocr(rawText),
+            dedupeResult = dedupe(OfferDedupeDecision.NEW_OFFER_CANDIDATE)
+        )
+
+        assertEquals("parsed", result.status)
+        assertEquals(10.34, result.draft?.price?.value ?: 0.0, 0.0)
+        assertEquals(6.0, result.draft?.pickupDistanceKm?.value ?: 0.0, 0.0)
+        assertEquals(3.8, result.draft?.tripDistanceKm?.value ?: 0.0, 0.0)
+        val total = (result.draft?.pickupDistanceKm?.value ?: 0.0) + (result.draft?.tripDistanceKm?.value ?: 0.0)
+        assertEquals(9.8, total, 0.0)
+        assertEquals(1.055, (result.draft?.price?.value ?: 0.0) / total, 0.001)
+    }
+
+    @Test
+    fun cleanUberCrop_selectsProductPriceWithoutHomeContextFilter() {
+        val result = parser.process(
+            fingerprint = uberFingerprint(price = 10.34).copy(
+                priceCandidates = listOf(ExtractedNumericCandidate("R$ 10,34", 10.34, "BRL", "PRICE", 8))
+            ),
+            ocrObservation = ocr("UberX R$ 10,34 8 min 6.0 km"),
+            dedupeResult = dedupe(OfferDedupeDecision.NEW_OFFER_CANDIDATE)
+        )
+
+        assertEquals("parsed", result.status)
+        assertEquals(10.34, result.draft?.price?.value ?: 0.0, 0.0)
+    }
+
+    @Test
     fun parsesUpdatedCluster() {
         val result = parser.process(
             fingerprint = uberFingerprint(price = 15.36, createdAtMs = 1_500L),

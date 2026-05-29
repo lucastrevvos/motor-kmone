@@ -72,6 +72,12 @@ object PreOfferVisualWatchdog {
                     currentState = currentState,
                     autoState = autoState
                 )
+            rejectionReason == "weak_tree_delta_visual_probe_candidate" ->
+                matchedConditions.contains("tree_delta_threshold") &&
+                    matchedConditions.contains("button_like_with_visible_text") &&
+                    visibleTextDelta >= 6 &&
+                    !isOperationalScreen &&
+                    !hasHardBlacklist
             else -> {
                 val allowsOperationalPreOffer =
                     rejectionReason == "map_eta_range_without_offer_evidence"
@@ -90,6 +96,8 @@ object PreOfferVisualWatchdog {
         val reason = when {
             !shouldStart -> null
             isStaleOperationalCandidate -> "stale_operational_earnings_probe_candidate"
+            rejectionReason == "weak_tree_delta_visual_probe_candidate" ->
+                "weak_tree_delta_visual_probe_candidate"
             rejectionReason == "searching_disappeared_empty_tree_probe_candidate" ->
                 "searching_disappeared_empty_tree_probe_candidate"
             rejectionReason == "map_eta_range_without_offer_evidence" ->

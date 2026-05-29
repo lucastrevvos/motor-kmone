@@ -669,9 +669,16 @@ class RadarCaptureOrchestrator(
             mapSearchingTreeSignal = mapSearchingTreeSignal,
             visibleTextDelta = visibleTextDelta
         )
+        val weakTreeDeltaProbeCandidateReason = weakTreeDeltaVisualProbeCandidateReason(
+            signal = signal,
+            matchedConditions = matchedConditions,
+            treeTextSignals = treeTextSignals,
+            visibleTextDelta = visibleTextDelta
+        )
         val forcedPreOfferReason = when {
             preOfferProbeCandidateReason != null -> preOfferProbeCandidateReason
             staleOperationalProbeCandidateReason != null -> staleOperationalProbeCandidateReason
+            weakTreeDeltaProbeCandidateReason != null -> weakTreeDeltaProbeCandidateReason
             treeTextSignals.rejectionReason == "map_eta_range_without_offer_evidence" &&
                 !PreOfferVisualWatchdog.hasHardBlacklist(signal.knownStateTexts) &&
                 !treeTextSignals.hasSearchingText -> "map_eta_range_without_offer_evidence"
@@ -1997,7 +2004,8 @@ class RadarCaptureOrchestrator(
         if (!plan.shouldStart) {
             if (
                 rejectionReason == "map_eta_range_without_offer_evidence" ||
-                rejectionReason == "stale_operational_earnings_probe_candidate"
+                rejectionReason == "stale_operational_earnings_probe_candidate" ||
+                rejectionReason == "weak_tree_delta_visual_probe_candidate"
             ) {
                 RadarLogger.i(
                     "KM_V2_ORCHESTRATOR",
@@ -2271,6 +2279,33 @@ class RadarCaptureOrchestrator(
         } else {
             null
         }
+    }
+
+    private fun weakTreeDeltaVisualProbeCandidateReason(
+        signal: RadarSignal.UberStateChanged,
+        matchedConditions: List<String>,
+        treeTextSignals: UberTreeTextSignals,
+        visibleTextDelta: Int
+    ): String? {
+        if (treeTextSignals.rejectionReason != "button_like_without_price_product_or_route") {
+            return null
+        }
+        if (!matchedConditions.contains("tree_delta_threshold") ||
+            !matchedConditions.contains("button_like_with_visible_text") ||
+            visibleTextDelta < 6
+        ) {
+            return null
+        }
+        if (treeTextSignals.hasOfferPriceText ||
+            treeTextSignals.hasUberProductText ||
+            treeTextSignals.hasRoutePairText ||
+            treeTextSignals.hasSearchingText ||
+            treeTextSignals.operationalScreen.isOperationalScreen ||
+            PreOfferVisualWatchdog.hasHardBlacklist(signal.knownStateTexts)
+        ) {
+            return null
+        }
+        return "weak_tree_delta_visual_probe_candidate"
     }
 
     private fun hasOfferCardTreeSignal(

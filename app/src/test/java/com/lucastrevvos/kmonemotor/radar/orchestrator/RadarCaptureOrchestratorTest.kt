@@ -657,6 +657,68 @@ class RadarCaptureOrchestratorTest {
     }
 
     @Test
+    fun uberDominantWeakTreeDeltaWithoutText_startsConservativeVisualWatchdog() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 0,
+                numericTextNodeCount = 0,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("aceitar", "detalhes", "tempo")
+            )
+        )
+
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(1_199L)
+        assertTrue(capturer.requests.isEmpty())
+        scheduler.advanceBy(1L)
+        assertEquals(1, capturer.requests.size)
+        assertEquals(TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG, capturer.requests.single().triggerSource)
+    }
+
+    @Test
+    fun uberDominantWeakTreeDeltaWithHardBlacklist_doesNotStartVisualWatchdog() {
+        val capturer = RecordingScreenshotCapturer()
+        val scheduler = FakeStabilizationScheduler()
+        val orchestrator = RadarCaptureOrchestrator(
+            screenshotCapturer = capturer,
+            clock = RadarClock { 3_000L },
+            watchdogScheduler = scheduler
+        )
+
+        orchestrator.onSignal(
+            uberStateSignal(
+                previousState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.ONLINE_IDLE,
+                currentState = com.lucastrevvos.kmonemotor.radar.core.UberReadableState.UNKNOWN,
+                nodeCount = 24,
+                visibleTextNodeCount = 9,
+                previousNodeCount = 10,
+                previousVisibleTextNodeCount = 0,
+                numericTextNodeCount = 0,
+                buttonLikeNodeCount = 4,
+                bottomHalfTextNodeCount = 9,
+                knownStateTexts = listOf("menu", "mensagens", "ganhos")
+            )
+        )
+
+        scheduler.advanceBy(6_000L)
+        assertTrue(capturer.requests.isEmpty())
+    }
+
+    @Test
     fun uberDominantOperationalPlusMoney_doesNotCreateDiagnosticCapture() {
         val capturer = RecordingScreenshotCapturer()
         val orchestrator = RadarCaptureOrchestrator(

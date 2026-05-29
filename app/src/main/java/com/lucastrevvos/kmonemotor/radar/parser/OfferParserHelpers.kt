@@ -93,15 +93,51 @@ class OfferParserHelpers(
 
     fun selectMainPrice(input: OfferParserInput): ParsedMoney? {
         val ninetyNineNegotiationContext = isNinetyNineNegotiationContext(input)
-        val candidate = if (ninetyNineNegotiationContext) {
-            input.fingerprint.priceCandidates
-                .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
-                ?: input.fingerprint.priceCandidates.firstOrNull()
+        val homeContext = ManualCropHomeContextDetector.inspect(
+            rawText = input.rawText,
+            normalizedText = input.normalizedText,
+            triggerSource = input.triggerSource
+        )
+        if (homeContext.detected) {
+            RadarLogger.i(
+                "KM_V2_PARSER",
+                "KM_V2_MANUAL_CROP_HOME_CONTEXT_DETECTED",
+                "triggerSource" to input.triggerSource,
+                "matchedTerms" to homeContext.matchedTerms.joinToString(","),
+                "hasOfferSignals" to homeContext.hasOfferSignals
+            )
+        }
+        val candidatePool = if (homeContext.detected) {
+            input.fingerprint.priceCandidates.filterNot { candidate ->
+                val value = candidate.normalizedValue ?: return@filterNot false
+                val rejected = ManualCropHomeContextDetector.isHomeGoalPrice(input.rawText, candidate.raw, value)
+                if (rejected) {
+                    RadarLogger.i(
+                        "KM_V2_PARSER",
+                        "KM_V2_PRICE_CANDIDATE_REJECTED",
+                        "price" to value,
+                        "reason" to "kmone_home_goal_context"
+                    )
+                }
+                rejected
+            }
         } else {
             input.fingerprint.priceCandidates
+        }
+        val uberProductCandidate = if (isUberLikeContext(input)) {
+            selectUberPriceNearProduct(input, candidatePool)
+        } else {
+            null
+        }
+        val candidate = uberProductCandidate ?: if (ninetyNineNegotiationContext) {
+            candidatePool
+                .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
+                ?: candidatePool.firstOrNull()
+        } else {
+            candidatePool
                 .sortedByDescending { it.normalizedValue ?: Double.MIN_VALUE }
                 .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
-                ?: input.fingerprint.priceCandidates.maxByOrNull { it.normalizedValue ?: Double.MIN_VALUE }
+                ?: candidatePool.maxByOrNull { it.normalizedValue ?: Double.MIN_VALUE }
         }
         val value = candidate?.normalizedValue ?: return null
         val confidence = when {
@@ -121,6 +157,18 @@ class OfferParserHelpers(
                 "selectedPrice" to value,
                 "negotiationOptions" to negotiationOptions,
                 "reason" to "first_primary_price_before_negotiation_options"
+            )
+        }
+        if (uberProductCandidate != null) {
+            RadarLogger.i(
+                "KM_V2_PARSER",
+                "KM_V2_OFFER_PRICE_SELECTED",
+                "price" to value,
+                "reason" to if (homeContext.detected) {
+                    "uber_price_near_product_after_home_context_filter"
+                } else {
+                    "uber_price_near_product"
+                }
             )
         }
         RadarLogger.i(
@@ -274,6 +322,64 @@ class OfferParserHelpers(
         val text = input.normalizedText
         return isNinetyNineLikeContext(input) &&
             (text.contains("negocia") || text.contains("aceitar por"))
+    }
+
+    private fun isUberLikeContext(input: OfferParserInput): Boolean {
+        return input.fingerprint.platformTextHint == PlatformTextHint.UBER ||
+            UBER_PRODUCT_LABELS.any { it.first.containsMatchIn(input.rawText) } ||
+            UBER_PRODUCT_LABELS.any { it.first.containsMatchIn(input.normalizedText) }
+    }
+
+    private fun selectUberPriceNearProduct(
+        input: OfferParserInput,
+        candidates: List<ExtractedNumericCandidate>
+    ): ExtractedNumericCandidate? {
+        if (candidates.isEmpty()) {
+            return null
+        }
+        val text = input.rawText.lowercase()
+        val productMatches = UBER_PRODUCT_LABELS
+            .flatMap { it.first.findAll(input.rawText).map { match -> match.range.first } }
+            .ifEmpty {
+                UBER_PRODUCT_LABELS.flatMap { it.first.findAll(input.normalizedText).map { match -> match.range.first } }
+            }
+        if (productMatches.isEmpty()) {
+            return null
+        }
+        return candidates
+            .mapNotNull { candidate ->
+                val value = candidate.normalizedValue ?: return@mapNotNull null
+                if (value < 5.0) {
+                    return@mapNotNull null
+                }
+                val priceIndex = findPriceIndex(text, candidate.raw, value)
+                if (priceIndex < 0) {
+                    return@mapNotNull null
+                }
+                val bestDistance = productMatches
+                    .map { productIndex -> priceIndex - productIndex }
+                    .filter { it >= 0 }
+                    .minOrNull()
+                    ?: return@mapNotNull null
+                if (bestDistance > 80) {
+                    return@mapNotNull null
+                }
+                candidate to bestDistance
+            }
+            .minWithOrNull(compareBy<Pair<ExtractedNumericCandidate, Int>> { it.second })
+            ?.first
+    }
+
+    private fun findPriceIndex(text: String, candidateRaw: String, value: Double): Int {
+        val direct = text.indexOf(candidateRaw.lowercase())
+        if (direct >= 0) {
+            return direct
+        }
+        val decimal = String.format(java.util.Locale.US, "%.2f", value)
+        val comma = decimal.replace(".", ",")
+        return text.indexOf("r$ $comma").takeIf { it >= 0 }
+            ?: text.indexOf("r$$comma").takeIf { it >= 0 }
+            ?: text.indexOf(comma)
     }
 
     private fun isNinetyNineLikeContext(input: OfferParserInput): Boolean {

@@ -254,6 +254,80 @@ class AutoMissDiagnosticsTest {
     }
 
     @Test
+    fun manualSuccessAfterWeakTreeDeltaWithoutWatchdog_reportsWatchdogNotStartedAfterWeakTreeDelta() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_000L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "weak_tree_delta_visual_probe_candidate",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE,
+                treeScore = 2,
+                hasOfferPriceText = false,
+                hasUberProductText = false,
+                hasRoutePairText = false
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-weak-tree",
+            manualPlatform = "UBER",
+            manualPrice = 10.10,
+            manualDistances = "6.0km,3.8km",
+            manualTimes = "8min,6min",
+            manualSelectedCropKind = "CENTER_CARD_AREA",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("watchdog_not_started_after_weak_tree_delta", diagnosis.likelyCause)
+    }
+
+    @Test
+    fun manualSuccessAfterWeakTreeDeltaWatchdogFailure_reportsWatchdogFailedAfterWeakTreeDelta() {
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_000L,
+                triggerSource = TriggerSource.UBER_DOMINANT_OFFER_DIAGNOSTIC,
+                stage = "trigger_rejected_pre_offer",
+                reason = "weak_tree_delta_visual_probe_candidate",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 11_100L,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "watchdog_started",
+                reason = "weak_tree_delta_visual_probe_candidate",
+                state = RadarAutoCaptureState.PRE_OFFER_MAP_STATE
+            )
+        )
+        diagnostics.recordAutoTrace(
+            AutoAttemptTrace(
+                timestampMs = 12_200L,
+                triggerSource = TriggerSource.UBER_PRE_OFFER_VISUAL_WATCHDOG,
+                stage = "pipeline_final",
+                fingerprintKind = "UNKNOWN",
+                persistReason = "watchdog_non_offer"
+            )
+        )
+
+        val diagnosis = diagnostics.reportManualOracleSuccess(
+            manualObservationId = "manual-weak-tree-watchdog",
+            manualPlatform = "UBER",
+            manualPrice = 10.10,
+            manualDistances = "6.0km,3.8km",
+            manualTimes = "8min,6min",
+            manualSelectedCropKind = "CENTER_CARD_AREA",
+            manualTriggerSource = "MANUAL_SCREEN_ANALYSIS",
+            timestampMs = 20_000L
+        )
+
+        assertEquals("watchdog_failed_after_weak_tree_delta", diagnosis.likelyCause)
+    }
+
+    @Test
     fun manualSuccessAfterSearchingDisappearedEmptyTreeProbeCandidate_reportsNoCardSignalAfterPreOffer() {
         diagnostics.recordAutoTrace(
             AutoAttemptTrace(
