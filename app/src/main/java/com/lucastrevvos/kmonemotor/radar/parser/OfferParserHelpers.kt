@@ -130,9 +130,7 @@ class OfferParserHelpers(
             null
         }
         val candidate = uberProductCandidate ?: if (ninetyNineNegotiationContext) {
-            candidatePool
-                .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
-                ?: candidatePool.firstOrNull()
+            selectNinetyNinePrimaryPrice(input, candidatePool)
         } else {
             candidatePool
                 .sortedByDescending { it.normalizedValue ?: Double.MIN_VALUE }
@@ -324,6 +322,29 @@ class OfferParserHelpers(
             (text.contains("negocia") || text.contains("aceitar por"))
     }
 
+    private fun selectNinetyNinePrimaryPrice(
+        input: OfferParserInput,
+        candidates: List<ExtractedNumericCandidate>
+    ): ExtractedNumericCandidate? {
+        val text = input.rawText.lowercase()
+        val acceptIndex = text.indexOf("aceitar por")
+        if (acceptIndex >= 0) {
+            candidates
+                .mapNotNull { candidate ->
+                    val value = candidate.normalizedValue ?: return@mapNotNull null
+                    if (value < 5.0) return@mapNotNull null
+                    val index = findPriceIndex(text, candidate.raw, value, startIndex = acceptIndex)
+                    if (index >= acceptIndex) candidate to index else null
+                }
+                .minByOrNull { it.second }
+                ?.first
+                ?.let { return it }
+        }
+        return candidates
+            .firstOrNull { (it.normalizedValue ?: 0.0) >= 5.0 }
+            ?: candidates.firstOrNull()
+    }
+
     private fun isUberLikeContext(input: OfferParserInput): Boolean {
         return input.fingerprint.platformTextHint == PlatformTextHint.UBER ||
             UBER_PRODUCT_LABELS.any { it.first.containsMatchIn(input.rawText) } ||
@@ -370,21 +391,23 @@ class OfferParserHelpers(
             ?.first
     }
 
-    private fun findPriceIndex(text: String, candidateRaw: String, value: Double): Int {
-        val direct = text.indexOf(candidateRaw.lowercase())
+    private fun findPriceIndex(text: String, candidateRaw: String, value: Double, startIndex: Int = 0): Int {
+        val direct = text.indexOf(candidateRaw.lowercase(), startIndex.coerceAtLeast(0))
         if (direct >= 0) {
             return direct
         }
         val decimal = String.format(java.util.Locale.US, "%.2f", value)
         val comma = decimal.replace(".", ",")
-        return text.indexOf("r$ $comma").takeIf { it >= 0 }
-            ?: text.indexOf("r$$comma").takeIf { it >= 0 }
-            ?: text.indexOf(comma)
+        val safeStart = startIndex.coerceAtLeast(0)
+        return text.indexOf("r$ $comma", safeStart).takeIf { it >= 0 }
+            ?: text.indexOf("r$$comma", safeStart).takeIf { it >= 0 }
+            ?: text.indexOf(comma, safeStart)
     }
 
     private fun isNinetyNineLikeContext(input: OfferParserInput): Boolean {
         val text = input.normalizedText
-        return text.contains("r$/km") ||
+        return input.fingerprint.platformTextHint == PlatformTextHint.NINETY_NINE ||
+            text.contains("r$/km") ||
             text.contains("cpf") ||
             text.contains("cartao verif") ||
             text.contains("cartão verif") ||
@@ -405,13 +428,23 @@ class OfferParserHelpers(
         if (explicitValuePerKm <= 0.0) return null
         val inferredTotal = price / explicitValuePerKm
         if (explicitRoutePairs.size >= 2) {
-            val explicitSegmentTotal = explicitRoutePairs[0].distanceKm.value + explicitRoutePairs[1].distanceKm.value
+            val explicitPickup = explicitRoutePairs[0]
+            val explicitTrip = explicitRoutePairs[1]
+            val explicitSegmentTotal = explicitPickup.distanceKm.value + explicitTrip.distanceKm.value
             val explicitDelta = kotlin.math.abs(explicitSegmentTotal - inferredTotal)
-            if (explicitDelta > 0.35 && explicitDelta / inferredTotal > 0.12) {
-                return null
+            if (explicitDelta <= 0.35 || explicitDelta / inferredTotal <= 0.12) {
+                return RouteSelection(
+                    pickupTimeMinutes = explicitPickup.timeMinutes,
+                    pickupDistanceKm = explicitPickup.distanceKm,
+                    tripTimeMinutes = explicitTrip.timeMinutes,
+                    tripDistanceKm = explicitTrip.distanceKm,
+                    routeConfidence = 0.9
+                )
             }
+            return null
         }
         val normalizedDistances = input.fingerprint.distanceCandidates.mapNotNull { candidate ->
+            if (candidate.raw.contains("min", ignoreCase = true)) return@mapNotNull null
             val normalized = when (candidate.unit) {
                 "m" -> (candidate.normalizedValue ?: return@mapNotNull null) / 1000.0
                 else -> candidate.normalizedValue

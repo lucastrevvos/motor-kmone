@@ -93,6 +93,27 @@ class EconomicDecisionEngineTest {
     }
 
     @Test
+    fun ninetyNineDecisionMetricsUsePickupPlusTripAndMainPrice() {
+        val result = engine.evaluate(
+            input(
+                draft(
+                    price = 24.10,
+                    pickupDistanceKm = 2.4,
+                    pickupTimeMin = 6.0,
+                    tripDistanceKm = 16.7,
+                    tripTimeMin = 21.0,
+                    valuePerKm = 1.26,
+                    platform = ParsedPlatform.NINETY_NINE
+                )
+            )
+        )
+
+        assertEquals(19.1, result.metrics.totalDistanceKm ?: 0.0, 0.0)
+        assertEquals(1.26, result.metrics.grossPerTotalKm ?: 0.0, 0.01)
+        assertTrue(result.metrics.totalDistanceKm != 37.7)
+    }
+
+    @Test
     fun lowConfidenceRouteAddsReason() {
         val result = engine.evaluate(input(draft(sanityIssues = listOf(ParsedOfferSanityIssue.LOW_CONFIDENCE_ROUTE))))
 
@@ -115,6 +136,7 @@ class EconomicDecisionEngineTest {
         tripDistanceKm: Double? = 7.0,
         tripTimeMin: Double? = 7.0,
         valuePerKm: Double? = null,
+        platform: ParsedPlatform = ParsedPlatform.UBER,
         blockEconomic: Boolean = false,
         sanityStatus: ParsedOfferSanityStatus = ParsedOfferSanityStatus.VALID,
         sanityIssues: List<ParsedOfferSanityIssue> = emptyList()
@@ -122,7 +144,7 @@ class EconomicDecisionEngineTest {
         parserVersion = "4.5-draft",
         observationId = "obs-1",
         clusterId = "cluster-1",
-        platform = ParsedPlatform.UBER,
+        platform = platform,
         product = "UberX",
         paymentMethod = null,
         price = price?.let { ParsedMoney(it, sourceText = "R$$it", confidence = 0.95) },

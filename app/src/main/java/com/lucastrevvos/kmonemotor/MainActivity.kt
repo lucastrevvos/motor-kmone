@@ -2568,12 +2568,14 @@ private fun SeenOfferCard(
                 uiModel = uiModel,
                 expanded = expanded
             )
+            SeenOfferActionButtons(
+                onSave = onSave,
+                onIgnore = onIgnore
+            )
             if (expanded) {
                 SeenOfferExpandedContent(
                     offer = offer,
-                    uiModel = uiModel,
-                    onSave = onSave,
-                    onIgnore = onIgnore
+                    uiModel = uiModel
                 )
             }
         }
@@ -2671,9 +2673,7 @@ private fun SeenOfferCollapsedContent(
 @Composable
 private fun SeenOfferExpandedContent(
     offer: SeenOffer,
-    uiModel: SeenOfferUiModel,
-    onSave: () -> Unit,
-    onIgnore: () -> Unit
+    uiModel: SeenOfferUiModel
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
@@ -2684,27 +2684,34 @@ private fun SeenOfferExpandedContent(
         DetailLine("Busca", uiModel.pickupLabel)
         DetailLine("Viagem", uiModel.tripLabel)
         DetailLine("Total", uiModel.totalDistanceLabel)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onSave,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF153326),
-                    contentColor = KmOnePalette.Positive
-                )
-            ) {
-                Text("Salvar")
-            }
-            OutlinedButton(
-                onClick = onIgnore,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(16.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextSecondary),
-                border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
-            ) {
-                Text("Ignorar")
-            }
+    }
+}
+
+@Composable
+private fun SeenOfferActionButtons(
+    onSave: () -> Unit,
+    onIgnore: () -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onSave,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF153326),
+                contentColor = KmOnePalette.Positive
+            )
+        ) {
+            Text("Salvar")
+        }
+        OutlinedButton(
+            onClick = onIgnore,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextSecondary),
+            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+        ) {
+            Text("Ignorar")
         }
     }
 }

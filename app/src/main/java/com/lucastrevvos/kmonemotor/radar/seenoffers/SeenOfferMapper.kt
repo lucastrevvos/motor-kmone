@@ -173,6 +173,7 @@ class SeenOfferMapper(
         if (platform == RidePlatform.NINETY_NINE) {
             val warnings = mutableListOf<String>()
             val normalizedCandidates = fingerprint.distanceCandidates.mapNotNull { candidate ->
+                if (isTimeLikeDistanceCandidate(candidate)) return@mapNotNull null
                 distanceFromCandidate(candidate)?.takeIf { it > 0.0 }?.let { normalized ->
                     Triple(candidate, normalized, candidate.unit == "m")
                 }
@@ -291,6 +292,7 @@ class SeenOfferMapper(
             )
         }
         val normalizedCandidates = fingerprint.distanceCandidates.mapNotNull { candidate ->
+            if (isTimeLikeDistanceCandidate(candidate)) return@mapNotNull null
             distanceFromCandidate(candidate)?.takeIf { it > 0.0 }?.let { normalized ->
                 Triple(candidate, normalized, candidate.unit == "m")
             }
@@ -332,6 +334,11 @@ class SeenOfferMapper(
 
     private fun timeAt(candidates: List<ExtractedNumericCandidate>, index: Int): Double? {
         return candidates.getOrNull(index)?.normalizedValue
+    }
+
+    private fun isTimeLikeDistanceCandidate(candidate: ExtractedNumericCandidate): Boolean {
+        return candidate.raw.contains("min", ignoreCase = true) ||
+            candidate.kind.contains("TIME", ignoreCase = true)
     }
 
     private data class DistanceSelection(

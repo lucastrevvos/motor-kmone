@@ -166,6 +166,43 @@ class OfferParserTest {
     }
 
     @Test
+    fun ninetyNineOfferWithNegotiationButtonsKeepsMainPriceAndExplicitRoutePairs() {
+        val result = parser.process(
+            fingerprint = ninetyNineFingerprint(
+                prices = listOf(
+                    ExtractedNumericCandidate("R$24,10", 24.10, "BRL", "PRICE", 8),
+                    ExtractedNumericCandidate("R$25,31", 25.31, "BRL", "PRICE", 3),
+                    ExtractedNumericCandidate("R$26,03", 26.03, "BRL", "PRICE", 3),
+                    ExtractedNumericCandidate("R$26,51", 26.51, "BRL", "PRICE", 3)
+                ),
+                valuePerKm = listOf(ExtractedNumericCandidate("R$1,26/km", 1.26, "BRL_PER_KM", "VALUE_PER_KM", 8))
+            ).copy(
+                distanceCandidates = listOf(
+                    ExtractedNumericCandidate("2,4km", 2.4, "km", "DISTANCE_KM", 8),
+                    ExtractedNumericCandidate("16,7km", 16.7, "km", "DISTANCE_KM", 8),
+                    ExtractedNumericCandidate("21 min", 21.0, "km", "DISTANCE_KM", 1)
+                ),
+                timeCandidates = listOf(
+                    ExtractedNumericCandidate("6min", 6.0, "min", "TIME_MINUTES", 8),
+                    ExtractedNumericCandidate("21min", 21.0, "min", "TIME_MINUTES", 8)
+                )
+            ),
+            ocrObservation = ocr(
+                "99 R$1,26/km 6min (2,4km) 21min (16,7km) Aceitar por R$24,10 R$25,31 R$26,03 R$26,51"
+            ),
+            dedupeResult = dedupe(OfferDedupeDecision.NEW_OFFER_CANDIDATE)
+        )
+
+        val draft = result.draft
+        assertEquals(ParsedPlatform.NINETY_NINE, draft?.platform)
+        assertEquals(24.10, draft?.price?.value ?: 0.0, 0.0)
+        assertEquals(2.4, draft?.pickupDistanceKm?.value ?: 0.0, 0.0)
+        assertEquals(16.7, draft?.tripDistanceKm?.value ?: 0.0, 0.0)
+        assertEquals(19.1, (draft?.pickupDistanceKm?.value ?: 0.0) + (draft?.tripDistanceKm?.value ?: 0.0), 0.01)
+        assertEquals(1.26, (draft?.price?.value ?: 0.0) / 19.1, 0.01)
+    }
+
+    @Test
     fun absurdPriceBecomesInvalidAndBlocksFutureEconomicDecision() {
         val result = parser.process(
             fingerprint = uberFingerprint(price = 479.0),
