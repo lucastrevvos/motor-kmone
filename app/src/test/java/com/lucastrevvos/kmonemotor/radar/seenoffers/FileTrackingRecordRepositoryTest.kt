@@ -39,6 +39,35 @@ class FileTrackingRecordRepositoryTest {
         assertEquals(emptyList<TrackingRecord>(), repository.list())
     }
 
+    @Test
+    fun updateTrackingRecord_changesAmountDistanceAndNotes() = runBlocking {
+        val repository = repository()
+        val original = record(id = "tracking-1")
+        repository.save(original)
+
+        val updated = repository.update(
+            original.copy(distanceKm = 7.2, amount = 35.0, notes = "ajustado")
+        )
+
+        assertEquals(7.2, updated?.distanceKm ?: 0.0, 0.001)
+        assertEquals(35.0, repository.list().single().amount ?: 0.0, 0.001)
+        assertEquals("ajustado", repository.list().single().notes)
+    }
+
+    @Test
+    fun linkedSavedRideId_roundTripsAsNullableAndFilled() = runBlocking {
+        val repository = repository()
+        val withoutLink = record(id = "tracking-1")
+        val withLink = record(id = "tracking-2").copy(linkedSavedRideId = "ride-2")
+
+        repository.save(withoutLink)
+        repository.save(withLink)
+
+        val records = repository.list().associateBy { it.id }
+        assertEquals(null, records["tracking-1"]?.linkedSavedRideId)
+        assertEquals("ride-2", records["tracking-2"]?.linkedSavedRideId)
+    }
+
     private fun repository(): FileTrackingRecordRepository {
         val file = Files.createTempFile("tracking-records", ".txt").toFile()
         file.delete()

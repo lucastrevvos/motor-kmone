@@ -31,6 +31,21 @@ class FileTrackingRecordRepository(
         }
     }
 
+    override suspend fun update(record: TrackingRecord): TrackingRecord? = withContext(Dispatchers.IO) {
+        synchronized(lock) {
+            val startedAt = System.nanoTime()
+            val records = loadRecords().toMutableList()
+            val index = records.indexOfFirst { it.id == record.id }
+            if (index < 0) {
+                null.also { logDuration("update", startedAt, "updated" to false) }
+            } else {
+                records[index] = record
+                persistRecords(records)
+                record.also { logDuration("update", startedAt, "updated" to true) }
+            }
+        }
+    }
+
     override suspend fun delete(id: String): Boolean = withContext(Dispatchers.IO) {
         synchronized(lock) {
             val startedAt = System.nanoTime()
@@ -76,7 +91,8 @@ class FileTrackingRecordRepository(
         encodeNullable(distanceKm),
         encodeNullable(amount),
         encodeNullable(notes),
-        createdAtMs.toString()
+        createdAtMs.toString(),
+        encodeNullable(linkedSavedRideId)
     ).joinToString(separator = "\t")
 
     private fun String.toTrackingRecord(): TrackingRecord {
@@ -90,7 +106,8 @@ class FileTrackingRecordRepository(
             distanceKm = decodeDouble(parts[5]),
             amount = decodeDouble(parts[6]),
             notes = decodeNullable(parts[7]),
-            createdAtMs = parts[8].toLong()
+            createdAtMs = parts[8].toLong(),
+            linkedSavedRideId = parts.getOrNull(9)?.let(::decodeNullable)
         )
     }
 

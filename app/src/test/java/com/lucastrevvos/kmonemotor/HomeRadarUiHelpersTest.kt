@@ -1,6 +1,8 @@
 package com.lucastrevvos.kmonemotor
 
 import com.lucastrevvos.kmonemotor.radar.seenoffers.RidePlatform
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRide
+import com.lucastrevvos.kmonemotor.radar.seenoffers.SavedRideSource
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffer
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferStatus
 import com.lucastrevvos.kmonemotor.radar.tracking.TrackingGpsStatus
@@ -42,6 +44,18 @@ class HomeRadarUiHelpersTest {
     @Test
     fun missingPermissionGpsStatus_usesWaitingPermissionLabel() {
         assertEquals("GPS: aguardando permissao", trackingGpsStatusLabel(TrackingGpsStatus.WAITING_PERMISSION))
+    }
+
+    @Test
+    fun recordsDisplayRides_hidesPrivateRideAuxiliarySavedRide() {
+        val visible = recordsDisplayRides(
+            listOf(
+                savedRide(id = "normal", source = SavedRideSource.MANUAL_ENTRY),
+                savedRide(id = "private", source = SavedRideSource.PRIVATE_RIDE)
+            )
+        )
+
+        assertEquals(listOf("normal"), visible.map { it.id })
     }
 
     @Test
@@ -92,5 +106,29 @@ class HomeRadarUiHelpersTest {
         routeTextHash = null,
         createdAtMs = createdAtMs,
         updatedAtMs = createdAtMs
+    )
+
+    private fun savedRide(
+        id: String,
+        source: SavedRideSource
+    ) = SavedRide(
+        id = id,
+        sourceSeenOfferId = null,
+        platform = RidePlatform.UNKNOWN,
+        price = 10.0,
+        valuePerKm = null,
+        pickupDistanceKm = null,
+        pickupTimeMin = null,
+        tripDistanceKm = null,
+        tripTimeMin = null,
+        totalDistanceKm = null,
+        estimatedTotalTimeMin = null,
+        productName = null,
+        originPreview = null,
+        destinationPreview = null,
+        acceptedAtMs = 1_000L,
+        createdAtMs = 1_000L,
+        updatedAtMs = 1_000L,
+        source = source
     )
 }

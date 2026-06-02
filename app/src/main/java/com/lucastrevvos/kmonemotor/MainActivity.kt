@@ -107,6 +107,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOfferUiModel
 import com.lucastrevvos.kmonemotor.radar.seenoffers.SeenOffersUiState
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecord
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordFactory
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordSyncProcessor
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordType
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordUiMapper
 import com.lucastrevvos.kmonemotor.radar.tracking.AndroidTrackingLocationClient
@@ -222,6 +223,12 @@ private sealed class RecordsListItem {
 private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     val context = LocalContext.current
     val module = remember { SeenOfferRuntime.get(context) }
+    val trackingSyncProcessor = remember {
+        TrackingRecordSyncProcessor(
+            trackingRecordRepository = module.trackingRecordRepository,
+            savedRideRepository = module.savedRideRepository
+        )
+    }
     val homeSummaryProvider = remember {
         HomeDailySummaryProvider(
             seenOfferRepository = module.seenOfferRepository,
@@ -346,11 +353,12 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
             val offers = reloadSeenOffers()
             val rides = reloadSavedRides()
             reloadFuelEntries()
-            reloadTrackingRecords()
+            val records = reloadTrackingRecords()
             val summary = withContext(Dispatchers.Default) {
                 homeSummaryProvider.summarize(
                     seenOffers = offers,
-                    savedRides = rides
+                    savedRides = rides,
+                    trackingRecords = records
                 )
             }
             homeState = HomeUiState(
@@ -451,7 +459,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                         fuelEntries = fuelEntries,
                         onSaveTrackingRecord = { record ->
                             coroutineScope.launch {
-                                val savedRecord = module.trackingRecordRepository.save(record)
+                                val savedRecord = trackingSyncProcessor.saveNew(record)
                                 RadarLogger.i(
                                     "KM_V2_TRACKING",
                                     "KM_V2_TRACKING_RECORD_SAVED",
@@ -461,21 +469,6 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                     "distanceKm" to savedRecord.distanceKm,
                                     "amount" to savedRecord.amount
                                 )
-                                if (savedRecord.type == TrackingRecordType.PRIVATE_RIDE &&
-                                    TrackingRecordFactory.isValidPrivateRideAmount(savedRecord.amount)
-                                ) {
-                                    val savedRide = createSavedRideFromPrivateTracking(savedRecord)
-                                    withContext(Dispatchers.IO) {
-                                        module.savedRideRepository.saveRide(savedRide)
-                                    }
-                                    RadarLogger.i(
-                                        "KM_V2_TRACKING",
-                                        "KM_V2_TRACKING_PRIVATE_RIDE_SAVED_RIDE_CREATED",
-                                        "trackingRecordId" to savedRecord.id,
-                                        "savedRideId" to savedRide.id,
-                                        "amount" to savedRecord.amount
-                                    )
-                                }
                                 refreshAll()
                             }
                         },
@@ -724,6 +717,26 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                     "fuelEntryId" to fuelEntryId
                                 )
                             }
+                            refreshAll()
+                        }
+                    },
+                    onSaveEditedTrackingRecord = { updatedRecord ->
+                        coroutineScope.launch {
+                            RadarLogger.i(
+                                "KM_V2_TRACKING",
+                                "KM_V2_TRACKING_RECORD_UPDATED",
+                                "id" to updatedRecord.id,
+                                "type" to updatedRecord.type,
+                                "distanceKm" to updatedRecord.distanceKm,
+                                "amount" to updatedRecord.amount
+                            )
+                            trackingSyncProcessor.update(updatedRecord)
+                            refreshAll()
+                        }
+                    },
+                    onDeleteTrackingRecord = { trackingRecord ->
+                        coroutineScope.launch {
+                            trackingSyncProcessor.delete(trackingRecord)
                             refreshAll()
                         }
                     }
@@ -1818,21 +1831,25 @@ private fun RecordsTab(
     onSaveEditedFuelEntry: (FuelEntry) -> Unit,
     onSaveEditedRide: (SavedRide) -> Unit,
     onDeleteRide: (String) -> Unit,
-    onDeleteFuelEntry: (String) -> Unit
+    onDeleteFuelEntry: (String) -> Unit,
+    onSaveEditedTrackingRecord: (TrackingRecord) -> Unit,
+    onDeleteTrackingRecord: (TrackingRecord) -> Unit
 ) {
     var period by remember { mutableStateOf(RecordsPeriodFilter.DAY) }
     var expandedItemId by remember(rides, fuelEntries, trackingRecords, period) { mutableStateOf<String?>(null) }
     var editingRide by remember { mutableStateOf<SavedRide?>(null) }
     var editingFuelEntry by remember { mutableStateOf<FuelEntry?>(null) }
+    var editingTrackingRecord by remember { mutableStateOf<TrackingRecord?>(null) }
     var deleteConfirmationRide by remember { mutableStateOf<SavedRide?>(null) }
     var deleteConfirmationFuelEntry by remember { mutableStateOf<FuelEntry?>(null) }
+    var deleteConfirmationTrackingRecord by remember { mutableStateOf<TrackingRecord?>(null) }
     var showFuelEntryDialog by remember { mutableStateOf(false) }
     var showManualRideDialog by remember { mutableStateOf(false) }
     val filteredRides = remember(rides, period) {
         recordsSummaryProvider.filterRides(rides, period)
     }
     val displayRides = remember(filteredRides) {
-        filteredRides.filterNot { it.source == SavedRideSource.PRIVATE_RIDE }
+        recordsDisplayRides(filteredRides)
     }
     val filteredFuelEntries = remember(fuelEntries, period) {
         recordsSummaryProvider.filterFuelEntries(fuelEntries, period)
@@ -1978,7 +1995,19 @@ private fun RecordsTab(
 
                             is RecordsListItem.TrackingItem -> TrackingRecordCard(
                                 record = item.trackingRecord,
-                                period = period
+                                period = period,
+                                onEdit = {
+                                    RadarLogger.i(
+                                        "KM_V2_TRACKING",
+                                        "KM_V2_TRACKING_RECORD_EDIT_REQUESTED",
+                                        "id" to item.trackingRecord.id,
+                                        "type" to item.trackingRecord.type
+                                    )
+                                    editingTrackingRecord = item.trackingRecord
+                                },
+                                onDelete = {
+                                    deleteConfirmationTrackingRecord = item.trackingRecord
+                                }
                             )
                         }
                     }
@@ -2055,6 +2084,20 @@ private fun RecordsTab(
                     "liters" to updatedEntry.liters
                 )
                 onSaveEditedFuelEntry(updatedEntry)
+            }
+        )
+    }
+
+    editingTrackingRecord?.let { record ->
+        TrackingRecordEditDialog(
+            record = record,
+            onDismiss = {
+                editingTrackingRecord = null
+            },
+            onSave = { updatedRecord ->
+                editingTrackingRecord = null
+                expandedItemId = null
+                onSaveEditedTrackingRecord(updatedRecord)
             }
         )
     }
@@ -2142,6 +2185,45 @@ private fun RecordsTab(
                         deleteConfirmationFuelEntry = null
                     }
                 ) {
+                    Text("Cancelar")
+                }
+            },
+            containerColor = KmOnePalette.Card
+        )
+    }
+
+    deleteConfirmationTrackingRecord?.let { record ->
+        AlertDialog(
+            onDismissRequest = {
+                deleteConfirmationTrackingRecord = null
+            },
+            title = { Text("Excluir tracking?") },
+            text = {
+                Text(
+                    if (record.type == TrackingRecordType.PRIVATE_RIDE) {
+                        "Essa acao removera a corrida particular e ajustara o total do dia."
+                    } else {
+                        "Essa acao removera o deslocamento dos registros."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        deleteConfirmationTrackingRecord = null
+                        expandedItemId = null
+                        onDeleteTrackingRecord(record)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.Negative,
+                        contentColor = KmOnePalette.TextPrimary
+                    )
+                ) {
+                    Text("Excluir")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteConfirmationTrackingRecord = null }) {
                     Text("Cancelar")
                 }
             },
@@ -4429,7 +4511,9 @@ private fun KmOneBottomBar(
 @Composable
 private fun TrackingRecordCard(
     record: TrackingRecord,
-    period: RecordsPeriodFilter
+    period: RecordsPeriodFilter,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
     val model = remember(record) { TrackingRecordUiMapper.map(record) }
     Surface(
@@ -4482,8 +4566,118 @@ private fun TrackingRecordCard(
             DividerLine()
             DetailLine("Duracao", model.durationLabel)
             DetailLine("Distancia", model.distanceLabel)
+            record.notes?.takeIf { it.isNotBlank() }?.let { DetailLine("Observacao", it) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onEdit,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.ElectricBlue),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.ElectricBlue)
+                ) {
+                    Text("Editar")
+                }
+                OutlinedButton(
+                    onClick = onDelete,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.Negative),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Negative)
+                ) {
+                    Text("Excluir")
+                }
+            }
         }
     }
+}
+
+@Composable
+private fun TrackingRecordEditDialog(
+    record: TrackingRecord,
+    onDismiss: () -> Unit,
+    onSave: (TrackingRecord) -> Unit
+) {
+    var amountText by remember(record.id) { mutableStateOf(record.amount?.let(::formatNumberInput) ?: "") }
+    var distanceText by remember(record.id) { mutableStateOf(record.distanceKm?.let(::formatNumberInput) ?: "") }
+    var notesText by remember(record.id) { mutableStateOf(record.notes.orEmpty()) }
+    val amountValid = record.type != TrackingRecordType.PRIVATE_RIDE ||
+        (isValidPositiveOrBlank(amountText) && amountText.isNotBlank())
+    val distanceValid = isValidNonNegativeOrBlank(distanceText)
+    val valid = amountValid && distanceValid
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (record.type == TrackingRecordType.PRIVATE_RIDE) {
+                    "Editar corrida particular"
+                } else {
+                    "Editar deslocamento"
+                }
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (record.type == TrackingRecordType.PRIVATE_RIDE) {
+                    OutlinedTextField(
+                        value = amountText,
+                        onValueChange = { amountText = it },
+                        label = { Text("Valor R$") },
+                        singleLine = true,
+                        isError = !amountValid,
+                        colors = darkInputColors()
+                    )
+                }
+                OutlinedTextField(
+                    value = distanceText,
+                    onValueChange = { distanceText = it },
+                    label = { Text("Distancia km") },
+                    singleLine = true,
+                    isError = !distanceValid,
+                    colors = darkInputColors()
+                )
+                OutlinedTextField(
+                    value = notesText,
+                    onValueChange = { notesText = it },
+                    label = { Text("Observacao") },
+                    colors = darkInputColors()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        record.copy(
+                            amount = if (record.type == TrackingRecordType.PRIVATE_RIDE) {
+                                parsePositiveOrNull(amountText)
+                            } else {
+                                null
+                            },
+                            distanceKm = parseNonNegativeOrNull(distanceText),
+                            notes = normalizeOptionalText(notesText)
+                        )
+                    )
+                },
+                enabled = valid,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = KmOnePalette.NeonSoft,
+                    contentColor = KmOnePalette.BackgroundDeep
+                )
+            ) {
+                Text("Salvar")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        },
+        containerColor = KmOnePalette.Card
+    )
 }
 
 private data class HomeRecentActivity(
@@ -4756,6 +4950,10 @@ private fun filterTrackingRecords(
     }
 }
 
+internal fun recordsDisplayRides(rides: List<SavedRide>): List<SavedRide> {
+    return rides.filterNot { it.source == SavedRideSource.PRIVATE_RIDE }
+}
+
 private fun createSavedRideFromPrivateTracking(record: TrackingRecord): SavedRide {
     val amount = record.amount ?: 0.0
     return SavedRide(
@@ -4910,6 +5108,11 @@ private fun emptyHomeSummary(): HomeDailySummary {
         seenOffersCount = 0,
         totalKmToday = null,
         averageValuePerKm = null,
+        paidRideKmToday = null,
+        displacementKmToday = 0.0,
+        operationalKmToday = null,
+        paidRideValuePerKm = null,
+        operationalValuePerKm = null,
         bestRideValuePerKm = null,
         bestRidePrice = null,
         bestRideProductName = null,

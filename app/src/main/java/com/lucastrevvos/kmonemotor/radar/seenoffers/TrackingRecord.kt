@@ -11,7 +11,8 @@ data class TrackingRecord(
     val distanceKm: Double?,
     val amount: Double?,
     val notes: String?,
-    val createdAtMs: Long
+    val createdAtMs: Long,
+    val linkedSavedRideId: String? = null
 )
 
 enum class TrackingRecordType {
@@ -32,7 +33,8 @@ object TrackingRecordFactory {
         amount: Double? = null,
         notes: String? = null,
         createdAtMs: Long = System.currentTimeMillis(),
-        id: String = UUID.randomUUID().toString()
+        id: String = UUID.randomUUID().toString(),
+        linkedSavedRideId: String? = null
     ): TrackingRecord {
         return TrackingRecord(
             id = id,
@@ -43,7 +45,8 @@ object TrackingRecordFactory {
             distanceKm = distanceKm,
             amount = amount,
             notes = notes,
-            createdAtMs = createdAtMs
+            createdAtMs = createdAtMs,
+            linkedSavedRideId = linkedSavedRideId
         )
     }
 

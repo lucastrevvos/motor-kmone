@@ -152,10 +152,39 @@ class HomeDailySummaryProviderTest {
         val summary = provider.summarize(
             seenOffers = emptyList(),
             savedRides = emptyList(),
+            trackingRecords = listOf(trackingRecord(type = TrackingRecordType.DISPLACEMENT, distanceKm = 20.0)),
             nowMs = nowMs
         )
 
         assertEquals(0.0, summary.earnedToday, 0.001)
+        assertEquals(20.0, summary.displacementKmToday, 0.001)
+    }
+
+    @Test
+    fun kmSummarySeparatesPaidRideAndOperationalKm() {
+        val provider = provider(goal = 150.0)
+
+        val summary = provider.summarize(
+            seenOffers = emptyList(),
+            savedRides = listOf(
+                savedRide(
+                    id = "paid",
+                    price = 100.0,
+                    pickupDistanceKm = null,
+                    tripDistanceKm = null,
+                    totalDistanceKm = 50.0,
+                    acceptedAtMs = nowMs
+                )
+            ),
+            trackingRecords = listOf(trackingRecord(type = TrackingRecordType.DISPLACEMENT, distanceKm = 20.0)),
+            nowMs = nowMs
+        )
+
+        assertEquals(50.0, summary.paidRideKmToday ?: 0.0, 0.001)
+        assertEquals(20.0, summary.displacementKmToday, 0.001)
+        assertEquals(70.0, summary.operationalKmToday ?: 0.0, 0.001)
+        assertEquals(2.0, summary.paidRideValuePerKm ?: 0.0, 0.001)
+        assertEquals(100.0 / 70.0, summary.operationalValuePerKm ?: 0.0, 0.001)
     }
 
     @Test
@@ -282,5 +311,20 @@ class HomeDailySummaryProviderTest {
         createdAtMs = acceptedAtMs,
         updatedAtMs = acceptedAtMs,
         source = source
+    )
+
+    private fun trackingRecord(
+        type: TrackingRecordType,
+        distanceKm: Double
+    ) = TrackingRecord(
+        id = "tracking-$type",
+        type = type,
+        startedAtMs = nowMs - 60_000L,
+        endedAtMs = nowMs,
+        durationSeconds = 60L,
+        distanceKm = distanceKm,
+        amount = null,
+        notes = null,
+        createdAtMs = nowMs
     )
 }
