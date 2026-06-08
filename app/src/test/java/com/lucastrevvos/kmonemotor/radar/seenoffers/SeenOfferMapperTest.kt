@@ -203,6 +203,52 @@ class SeenOfferMapperTest {
     }
 
     @Test
+    fun ninetyNineOverlayAndSeenOfferUseSameMainPriceAndRouteWhenMinutesLookLikeKm() {
+        val seenOffer = mapper.fromPipelineResult(
+            fingerprint = fingerprint(
+                kind = OfferTextFingerprintKind.OFFER_LIKE,
+                platformHint = PlatformTextHint.NINETY_NINE,
+                price = 24.10,
+                valuePerKm = 1.26,
+                distances = listOf(
+                    ExtractedNumericCandidate("2,4km", 2.4, "km", "DISTANCE_KM", 8),
+                    ExtractedNumericCandidate("16,7km", 16.7, "km", "DISTANCE_KM", 8),
+                    ExtractedNumericCandidate("21 min", 21.0, "km", "DISTANCE_KM", 1)
+                ),
+                times = listOf(
+                    ExtractedNumericCandidate("6min", 6.0, "min", "TIME_MINUTES", 8),
+                    ExtractedNumericCandidate("21min", 21.0, "min", "TIME_MINUTES", 8)
+                ),
+                extraPrices = listOf(25.31, 26.03, 26.51)
+            ),
+            observation = observation(
+                rawText = "99 R$1,26/km 6min (2,4km) 21min (16,7km) Aceitar por R$24,10 R$25,31 R$26,03 R$26,51"
+            ),
+            parserResult = OfferParserResult(
+                status = "parsed",
+                reason = "parsed",
+                draft = parsedDraft(
+                    platform = ParsedPlatform.NINETY_NINE,
+                    price = 24.10,
+                    valuePerKm = 1.26,
+                    pickupTimeMinutes = 6.0,
+                    pickupDistanceKm = 2.4,
+                    tripTimeMinutes = 21.0,
+                    tripDistanceKm = 16.7,
+                    rawTextPreview = "99 R$1,26/km 6min (2,4km) 21min (16,7km) Aceitar por R$24,10"
+                )
+            )
+        )
+
+        assertEquals(24.10, seenOffer?.price ?: 0.0, 0.0)
+        assertEquals(2.4, seenOffer?.pickupDistanceKm ?: 0.0, 0.0)
+        assertEquals(16.7, seenOffer?.tripDistanceKm ?: 0.0, 0.0)
+        assertEquals(19.1, seenOffer?.totalDistanceKm ?: 0.0, 0.01)
+        assertEquals(1.26, seenOffer?.valuePerKm ?: 0.0, 0.02)
+        assertTrue(seenOffer?.totalDistanceKm != 37.7)
+    }
+
+    @Test
     fun uber_tinyMeterNoiseIsRejectedWhenValidKmRouteExists() {
         val seenOffer = mapper.fromPipelineResult(
             fingerprint = fingerprint(
