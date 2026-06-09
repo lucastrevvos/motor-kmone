@@ -110,6 +110,7 @@ import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordFactory
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordSyncProcessor
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordType
 import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordUiMapper
+import com.lucastrevvos.kmonemotor.radar.seenoffers.TrackingRecordUiModel
 import com.lucastrevvos.kmonemotor.radar.tracking.AndroidTrackingLocationClient
 import com.lucastrevvos.kmonemotor.radar.tracking.TrackingDistanceCalculator
 import com.lucastrevvos.kmonemotor.radar.tracking.TrackingDistanceState
@@ -214,22 +215,64 @@ private data class TrackingUiSession(
 private sealed class RecordsListItem {
     abstract val stableId: String
     abstract val timestampMs: Long
+    abstract val contentType: String
 
-    data class RideItem(val ride: SavedRide) : RecordsListItem() {
+    data class RideItem(
+        val ride: SavedRide,
+        val visualData: RecordsRideVisualData
+    ) : RecordsListItem() {
         override val stableId: String = "ride:${ride.id}"
         override val timestampMs: Long = ride.acceptedAtMs
+        override val contentType: String = "saved_ride"
     }
 
-    data class FuelItem(val fuelEntry: FuelEntry) : RecordsListItem() {
+    data class FuelItem(
+        val fuelEntry: FuelEntry,
+        val visualData: RecordsFuelVisualData
+    ) : RecordsListItem() {
         override val stableId: String = "fuel:${fuelEntry.id}"
         override val timestampMs: Long = fuelEntry.createdAtMs
+        override val contentType: String = "fuel_entry"
     }
 
-    data class TrackingItem(val trackingRecord: TrackingRecord) : RecordsListItem() {
+    data class TrackingItem(
+        val trackingRecord: TrackingRecord,
+        val visualData: RecordsTrackingVisualData
+    ) : RecordsListItem() {
         override val stableId: String = "tracking:${trackingRecord.id}"
         override val timestampMs: Long = trackingRecord.endedAtMs
+        override val contentType: String = "tracking_record"
     }
 }
+
+private data class RecordsRideVisualData(
+    val platformLabel: String,
+    val perKmLabel: String,
+    val hasPerKm: Boolean,
+    val priceLabel: String,
+    val collapsedStampLabel: String,
+    val expandedStampLabel: String,
+    val productLabel: String,
+    val pickupMetricsLabel: String,
+    val tripMetricsLabel: String,
+    val totalDistanceLabel: String,
+    val sourceLabel: String
+)
+
+private data class RecordsFuelVisualData(
+    val amountLabel: String,
+    val secondaryLabel: String,
+    val collapsedStampLabel: String,
+    val expandedStampLabel: String,
+    val fuelTypeLabel: String,
+    val litersLabel: String,
+    val noteLabel: String
+)
+
+private data class RecordsTrackingVisualData(
+    val model: TrackingRecordUiModel,
+    val stampLabel: String
+)
 
 private fun RadarDebugState.toHomeRadarVisualState(): HomeRadarVisualState {
     return HomeRadarVisualState(
@@ -1601,11 +1644,26 @@ private fun RecordsTab(
     val filteredTrackingRecords = remember(trackingRecords, period) {
         filterTrackingRecords(trackingRecords, period)
     }
-    val recordsItems = remember(displayRides, filteredFuelEntries, filteredTrackingRecords) {
+    val recordsItems = remember(displayRides, filteredFuelEntries, filteredTrackingRecords, period) {
         (
-            displayRides.map(RecordsListItem::RideItem) +
-                filteredFuelEntries.map(RecordsListItem::FuelItem) +
-                filteredTrackingRecords.map(RecordsListItem::TrackingItem)
+            displayRides.map { ride ->
+                RecordsListItem.RideItem(
+                    ride = ride,
+                    visualData = ride.toRecordsRideVisualData(period)
+                )
+            } +
+                filteredFuelEntries.map { fuelEntry ->
+                    RecordsListItem.FuelItem(
+                        fuelEntry = fuelEntry,
+                        visualData = fuelEntry.toRecordsFuelVisualData(period)
+                    )
+                } +
+                filteredTrackingRecords.map { trackingRecord ->
+                    RecordsListItem.TrackingItem(
+                        trackingRecord = trackingRecord,
+                        visualData = trackingRecord.toRecordsTrackingVisualData(period)
+                    )
+                }
             )
             .sortedByDescending { it.timestampMs }
     }
@@ -1685,11 +1743,15 @@ private fun RecordsTab(
                         )
                     }
                 } else {
-                    items(recordsItems, key = { it.stableId }) { item ->
+                    items(
+                        items = recordsItems,
+                        key = { it.stableId },
+                        contentType = { it.contentType }
+                    ) { item ->
                         when (item) {
                             is RecordsListItem.RideItem -> SavedRideAccordionCard(
                                 ride = item.ride,
-                                period = period,
+                                visualData = item.visualData,
                                 expanded = expandedItemId == item.stableId,
                                 onToggleExpanded = {
                                     expandedItemId = if (expandedItemId == item.stableId) null else item.stableId
@@ -1714,7 +1776,7 @@ private fun RecordsTab(
 
                             is RecordsListItem.FuelItem -> FuelEntryAccordionCard(
                                 fuelEntry = item.fuelEntry,
-                                period = period,
+                                visualData = item.visualData,
                                 expanded = expandedItemId == item.stableId,
                                 onToggleExpanded = {
                                     expandedItemId = if (expandedItemId == item.stableId) null else item.stableId
@@ -1739,7 +1801,7 @@ private fun RecordsTab(
 
                             is RecordsListItem.TrackingItem -> TrackingRecordCard(
                                 record = item.trackingRecord,
-                                period = period,
+                                visualData = item.visualData,
                                 onEdit = {
                                     RadarLogger.i(
                                         "KM_V2_TRACKING",
@@ -3435,7 +3497,7 @@ private fun RecordsPeriodFilterTabs(
 @Composable
 private fun SavedRideAccordionCard(
     ride: SavedRide,
-    period: RecordsPeriodFilter,
+    visualData: RecordsRideVisualData,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
     onEdit: () -> Unit,
@@ -3455,13 +3517,13 @@ private fun SavedRideAccordionCard(
         ) {
             SavedRideCollapsedContent(
                 ride = ride,
-                period = period,
+                visualData = visualData,
                 expanded = expanded
             )
             if (expanded) {
                 SavedRideExpandedContent(
                     ride = ride,
-                    period = period,
+                    visualData = visualData,
                     onEdit = onEdit,
                     onDelete = onDelete
                 )
@@ -3473,7 +3535,7 @@ private fun SavedRideAccordionCard(
 @Composable
 private fun FuelEntryAccordionCard(
     fuelEntry: FuelEntry,
-    period: RecordsPeriodFilter,
+    visualData: RecordsFuelVisualData,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
     onEdit: () -> Unit,
@@ -3493,13 +3555,13 @@ private fun FuelEntryAccordionCard(
         ) {
             FuelEntryCollapsedContent(
                 fuelEntry = fuelEntry,
-                period = period,
+                visualData = visualData,
                 expanded = expanded
             )
             if (expanded) {
                 FuelEntryExpandedContent(
                     fuelEntry = fuelEntry,
-                    period = period,
+                    visualData = visualData,
                     onEdit = onEdit,
                     onDelete = onDelete
                 )
@@ -3511,7 +3573,7 @@ private fun FuelEntryAccordionCard(
 @Composable
 private fun FuelEntryCollapsedContent(
     fuelEntry: FuelEntry,
-    period: RecordsPeriodFilter,
+    visualData: RecordsFuelVisualData,
     expanded: Boolean
 ) {
     Row(
@@ -3529,15 +3591,12 @@ private fun FuelEntryCollapsedContent(
                 textColor = KmOnePalette.Attention
             )
             Text(
-                text = formatMoney(fuelEntry.amountBrl),
+                text = visualData.amountLabel,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = KmOnePalette.TextPrimary
             )
-            val secondary = listOfNotNull(
-                fuelEntry.fuelType,
-                fuelEntry.liters?.let { "${formatDecimal(it)} L" }
-            ).joinToString(" • ")
+            val secondary = visualData.secondaryLabel
             if (secondary.isNotBlank()) {
                 Text(
                     text = secondary,
@@ -3551,7 +3610,7 @@ private fun FuelEntryCollapsedContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = formatRecordStamp(fuelEntry.createdAtMs, period),
+                text = visualData.collapsedStampLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = KmOnePalette.TextSecondary
             )
@@ -3568,18 +3627,18 @@ private fun FuelEntryCollapsedContent(
 @Composable
 private fun FuelEntryExpandedContent(
     fuelEntry: FuelEntry,
-    period: RecordsPeriodFilter,
+    visualData: RecordsFuelVisualData,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
         DetailLine("Tipo", "Abastecimento")
-        DetailLine("Valor", formatMoney(fuelEntry.amountBrl))
-        DetailLine("Combustivel", fuelEntry.fuelType ?: "-")
-        DetailLine("Litros", fuelEntry.liters?.let { "${formatDecimal(it)} L" } ?: "-")
-        DetailLine("Observacao", fuelEntry.note ?: "-")
-        DetailLine("Quando", formatRecordStamp(fuelEntry.createdAtMs, period, includeDateForDay = true))
+        DetailLine("Valor", visualData.amountLabel)
+        DetailLine("Combustivel", visualData.fuelTypeLabel)
+        DetailLine("Litros", visualData.litersLabel)
+        DetailLine("Observacao", visualData.noteLabel)
+        DetailLine("Quando", visualData.expandedStampLabel)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = onEdit,
@@ -3606,7 +3665,7 @@ private fun FuelEntryExpandedContent(
 @Composable
 private fun SavedRideCollapsedContent(
     ride: SavedRide,
-    period: RecordsPeriodFilter,
+    visualData: RecordsRideVisualData,
     expanded: Boolean
 ) {
     Row(
@@ -3620,18 +3679,18 @@ private fun SavedRideCollapsedContent(
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatusChip(
-                    text = platformLabel(ride.platform),
+                    text = visualData.platformLabel,
                     background = Color(0x1F5AA8FF),
                     textColor = KmOnePalette.ElectricBlue
                 )
                 StatusChip(
-                    text = savedRidePerKmLabel(ride),
+                    text = visualData.perKmLabel,
                     background = Color(0x1AFFFFFF),
-                    textColor = if (resolvedSavedRideValuePerKm(ride) != null) KmOnePalette.Neon else KmOnePalette.TextSecondary
+                    textColor = if (visualData.hasPerKm) KmOnePalette.Neon else KmOnePalette.TextSecondary
                 )
             }
             Text(
-                text = formatMoney(ride.price),
+                text = visualData.priceLabel,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 color = KmOnePalette.TextPrimary
@@ -3642,7 +3701,7 @@ private fun SavedRideCollapsedContent(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = formatRecordStamp(ride.acceptedAtMs, period),
+                text = visualData.collapsedStampLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = KmOnePalette.TextSecondary
             )
@@ -3659,24 +3718,20 @@ private fun SavedRideCollapsedContent(
 @Composable
 private fun SavedRideExpandedContent(
     ride: SavedRide,
-    period: RecordsPeriodFilter,
+    visualData: RecordsRideVisualData,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val resolvedEconomics = resolvedSavedRideEconomics(ride)
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         DividerLine()
-        DetailLine("Produto", ride.productName ?: platformLabel(ride.platform))
-        DetailLine("Quando", formatRecordStamp(ride.acceptedAtMs, period, includeDateForDay = true))
+        DetailLine("Produto", visualData.productLabel)
+        DetailLine("Quando", visualData.expandedStampLabel)
         DetailLine("Origem", ride.originPreview ?: "—")
         DetailLine("Destino", ride.destinationPreview ?: "—")
-        MetricsRow("Busca", ride.pickupTimeMin, normalizedDistanceForDisplay(resolvedEconomics.pickupDistanceKm))
-        MetricsRow("Viagem", ride.tripTimeMin, normalizedDistanceForDisplay(resolvedEconomics.tripDistanceKm))
-        DetailLine(
-            "Total",
-            normalizedDistanceForDisplay(resolvedEconomics.totalDistanceKm)?.let(::formatKm) ?: "—"
-        )
-        DetailLine("Fonte", savedRideSourceLabel(ride.source))
+        MetricsLabelRow("Busca", visualData.pickupMetricsLabel)
+        MetricsLabelRow("Viagem", visualData.tripMetricsLabel)
+        DetailLine("Total", visualData.totalDistanceLabel)
+        DetailLine("Fonte", visualData.sourceLabel)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = onEdit,
@@ -4095,6 +4150,17 @@ private fun MetricsRow(
 }
 
 @Composable
+private fun MetricsLabelRow(
+    title: String,
+    value: String
+) {
+    DetailLine(
+        label = title,
+        value = value
+    )
+}
+
+@Composable
 private fun EmptyStateCard(
     title: String,
     message: String
@@ -4259,11 +4325,11 @@ private fun KmOneBottomBar(
 @Composable
 private fun TrackingRecordCard(
     record: TrackingRecord,
-    period: RecordsPeriodFilter,
+    visualData: RecordsTrackingVisualData,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val model = remember(record) { TrackingRecordUiMapper.map(record) }
+    val model = visualData.model
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(24.dp),
@@ -4306,7 +4372,7 @@ private fun TrackingRecordCard(
                     )
                 }
                 Text(
-                    text = formatRecordStamp(record.endedAtMs, period),
+                    text = visualData.stampLabel,
                     style = MaterialTheme.typography.bodySmall,
                     color = KmOnePalette.TextSecondary
                 )
@@ -4578,6 +4644,63 @@ private fun formatRecordStamp(
         else -> "dd/MM HH:mm"
     }
     return SimpleDateFormat(pattern, Locale.forLanguageTag("pt-BR")).format(Date(timestamp))
+}
+
+private fun SavedRide.toRecordsRideVisualData(period: RecordsPeriodFilter): RecordsRideVisualData {
+    val resolvedEconomics = resolvedSavedRideEconomics(this)
+    val valuePerKm = resolvedEconomics.valuePerKm
+    return RecordsRideVisualData(
+        platformLabel = platformLabel(platform),
+        perKmLabel = valuePerKm?.let(::formatPerKm) ?: "R$/km \u2014",
+        hasPerKm = valuePerKm != null,
+        priceLabel = formatMoney(price),
+        collapsedStampLabel = formatRecordStamp(acceptedAtMs, period),
+        expandedStampLabel = formatRecordStamp(acceptedAtMs, period, includeDateForDay = true),
+        productLabel = productName ?: platformLabel(platform),
+        pickupMetricsLabel = recordsMetricsLabel(
+            time = pickupTimeMin,
+            distance = normalizedDistanceForDisplay(resolvedEconomics.pickupDistanceKm)
+        ),
+        tripMetricsLabel = recordsMetricsLabel(
+            time = tripTimeMin,
+            distance = normalizedDistanceForDisplay(resolvedEconomics.tripDistanceKm)
+        ),
+        totalDistanceLabel = normalizedDistanceForDisplay(resolvedEconomics.totalDistanceKm)?.let(::formatKm) ?: "\u2014",
+        sourceLabel = savedRideSourceLabel(source)
+    )
+}
+
+private fun FuelEntry.toRecordsFuelVisualData(period: RecordsPeriodFilter): RecordsFuelVisualData {
+    val litersLabel = liters?.let { "${formatDecimal(it)} L" } ?: "-"
+    return RecordsFuelVisualData(
+        amountLabel = formatMoney(amountBrl),
+        secondaryLabel = listOfNotNull(
+            fuelType,
+            liters?.let { "${formatDecimal(it)} L" }
+        ).joinToString(" \u2022 "),
+        collapsedStampLabel = formatRecordStamp(createdAtMs, period),
+        expandedStampLabel = formatRecordStamp(createdAtMs, period, includeDateForDay = true),
+        fuelTypeLabel = fuelType ?: "-",
+        litersLabel = litersLabel,
+        noteLabel = note ?: "-"
+    )
+}
+
+private fun TrackingRecord.toRecordsTrackingVisualData(period: RecordsPeriodFilter): RecordsTrackingVisualData {
+    return RecordsTrackingVisualData(
+        model = TrackingRecordUiMapper.map(this),
+        stampLabel = formatRecordStamp(endedAtMs, period)
+    )
+}
+
+private fun recordsMetricsLabel(
+    time: Double?,
+    distance: Double?
+): String {
+    return listOfNotNull(
+        time?.let(::formatMinutes),
+        distance?.let(::formatKm)
+    ).joinToString(" \u2022 ").ifBlank { "n/d" }
 }
 
 private fun recordsPeriodTitle(period: RecordsPeriodFilter): String {
