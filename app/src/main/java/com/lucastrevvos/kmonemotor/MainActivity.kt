@@ -1,6 +1,7 @@
 package com.lucastrevvos.kmonemotor
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -8,6 +9,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -145,11 +147,26 @@ class MainActivity : ComponentActivity() {
 
 private const val ENABLE_HOME_PERF_LOGS = false
 
+private class OnboardingPreferences(context: Context) {
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    fun hasSeenOnboarding(): Boolean = prefs.getBoolean(KEY_HAS_SEEN_ONBOARDING, false)
+
+    fun markSeen() {
+        prefs.edit().putBoolean(KEY_HAS_SEEN_ONBOARDING, true).apply()
+    }
+
+    private companion object {
+        const val PREFS_NAME = "km_one_onboarding"
+        const val KEY_HAS_SEEN_ONBOARDING = "hasSeenOnboarding"
+    }
+}
+
 private enum class AppTab(
     val label: String,
     val iconResId: Int
 ) {
-    HOME("Inicio", R.drawable.ic_home),
+    HOME("Início", R.drawable.ic_home),
     SEEN("Vistas", R.drawable.ic_eye),
     RIDES("Registros", R.drawable.ic_clipboard),
     CONFIG("Config.", R.drawable.ic_settings)
@@ -289,6 +306,7 @@ private fun RadarDebugState.toConfigRadarVisualState(): ConfigRadarVisualState {
 @Composable
 private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     val context = LocalContext.current
+    val onboardingPreferences = remember { OnboardingPreferences(context) }
     val module = remember { SeenOfferRuntime.get(context) }
     val trackingSyncProcessor = remember {
         TrackingRecordSyncProcessor(
@@ -323,6 +341,8 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
     var debugExporting by remember { mutableStateOf(false) }
     var debugExportMessage by remember { mutableStateOf<String?>(null) }
     var showLaunchBrand by remember { mutableStateOf(true) }
+    var showOnboarding by remember { mutableStateOf(!onboardingPreferences.hasSeenOnboarding()) }
+    var onboardingReviewMode by remember { mutableStateOf(false) }
     var didInitialRefresh by remember { mutableStateOf(false) }
     val liveHomeSummary = homeState.summary
 
@@ -479,6 +499,44 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
 
     if (showLaunchBrand) {
         KmOneLaunchBrandScreen()
+        return
+    }
+
+    if (showOnboarding) {
+        OnboardingScreen(
+            settings = driverSettings,
+            isReviewMode = onboardingReviewMode,
+            onSaveDailyGoal = { dailyGoal ->
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        module.driverSettingsRepository.updateDailyGoal(dailyGoal)
+                    }
+                    RadarLogger.i(
+                        "KM_V2_SEEN",
+                        "KM_V2_DRIVER_SETTINGS_DAILY_GOAL_SAVED",
+                        "dailyGoalBrl" to dailyGoal,
+                        "source" to "onboarding"
+                    )
+                    reloadDriverSettings()
+                    refreshAll()
+                }
+            },
+            onFinish = {
+                onboardingPreferences.markSeen()
+                onboardingReviewMode = false
+                showOnboarding = false
+            },
+            onConfigurePermissions = {
+                onboardingPreferences.markSeen()
+                onboardingReviewMode = false
+                selectedTab = AppTab.CONFIG
+                showOnboarding = false
+            },
+            onExitReview = {
+                onboardingReviewMode = false
+                showOnboarding = false
+            }
+        )
         return
     }
 
@@ -855,6 +913,10 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                     Uri.parse("package:${context.packageName}")
                                 ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             )
+                        },
+                        onReviewOnboarding = {
+                            onboardingReviewMode = true
+                            showOnboarding = true
                         },
                         onExportDebugLogs = {
                         coroutineScope.launch {
@@ -1279,7 +1341,7 @@ private fun HomeBrandHeader(
         ) {
             Image(
                 painter = painterResource(id = R.drawable.ic_settings),
-                contentDescription = "Configuracoes",
+                contentDescription = "Configurações",
                 modifier = Modifier.size(20.dp),
                 colorFilter = ColorFilter.tint(KmOnePalette.TextPrimary)
             )
@@ -1389,7 +1451,7 @@ private fun HomeHeroCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Meta diaria",
+                            text = "Meta diária",
                             style = MaterialTheme.typography.bodyMedium,
                             color = KmOnePalette.TextSecondary
                         )
@@ -1406,7 +1468,7 @@ private fun HomeHeroCard(
                             errorMessage != null -> errorMessage
                             isLoading -> "Atualizando painel do dia..."
                             summary.goalSource == HomeGoalSource.MISSING -> "Defina uma meta para acompanhar seu progresso."
-                            summary.isGoalReached -> "Voce passou da meta e segue acelerando acima do alvo."
+                            summary.isGoalReached -> "Você passou da meta e segue acelerando acima do alvo."
                             else -> "Faltam ${formatMoney(summary.remainingToGoal)} para bater a meta."
                         },
                         style = MaterialTheme.typography.bodySmall,
@@ -1433,7 +1495,7 @@ private fun HomeHeroCard(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
                         border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
                     ) {
-                        Text("Meta diaria")
+                        Text("Meta diária")
                     }
                 }
             }
@@ -1553,7 +1615,7 @@ private fun SeenOffersTab(
                 }
 
                 state.errorMessage != null -> EmptyState(
-                    title = "Nao foi possivel carregar",
+                    title = "Não foi possível carregar",
                     message = state.errorMessage,
                     actionLabel = "Tentar novamente",
                     onAction = { onRefresh(null) }
@@ -1561,7 +1623,7 @@ private fun SeenOffersTab(
 
                 filteredOffers.isEmpty() -> EmptyState(
                     title = "Nenhuma oferta pendente",
-                    message = "As proximas ofertas detectadas pelo KM One aparecerao aqui.",
+                    message = "As próximas ofertas detectadas pelo KM One aparecerão aqui.",
                     actionLabel = "Atualizar",
                     onAction = { onRefresh(null) }
                 )
@@ -1689,7 +1751,7 @@ private fun RecordsTab(
             }
 
             error != null -> EmptyState(
-                title = "Nao foi possivel carregar",
+                title = "Não foi possível carregar",
                 message = error,
                 actionLabel = "Tentar novamente",
                 onAction = onRefresh
@@ -1739,7 +1801,7 @@ private fun RecordsTab(
                     item {
                         EmptyStateCard(
                             title = "Nenhum registro neste periodo",
-                            message = "Corridas, tracking e abastecimentos aparecerao aqui."
+                            message = "Corridas, tracking e abastecimentos aparecerão aqui."
                         )
                     }
                 } else {
@@ -2039,6 +2101,764 @@ private fun RecordsTab(
 }
 
 @Composable
+private fun OnboardingScreen(
+    settings: DriverSettings,
+    isReviewMode: Boolean,
+    onSaveDailyGoal: (Double) -> Unit,
+    onFinish: () -> Unit,
+    onConfigurePermissions: () -> Unit,
+    onExitReview: () -> Unit
+) {
+    var page by remember { mutableStateOf(0) }
+    var dailyGoalText by remember(settings.dailyGoalBrl) {
+        mutableStateOf(settings.dailyGoalBrl?.let(::formatNumberInput) ?: "260")
+    }
+    val dailyGoalValid = isValidPositiveOrBlank(dailyGoalText) && dailyGoalText.isNotBlank()
+    val pageCount = 11
+    val appBackgroundBrush = remember {
+        Brush.verticalGradient(
+            colors = listOf(
+                KmOnePalette.BackgroundDeep,
+                KmOnePalette.Background,
+                Color(0xFF06251A),
+                KmOnePalette.BackgroundDeep
+            )
+        )
+    }
+
+    BackHandler {
+        when {
+            page > 0 -> page -= 1
+            isReviewMode -> onExitReview()
+            else -> Unit
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(appBackgroundBrush)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 22.dp, bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    StatusChip(
+                        text = "Introdução",
+                        background = Color(0x1F5BFF9A),
+                        textColor = KmOnePalette.Neon
+                    )
+                    TextButton(
+                        onClick = {
+                            when {
+                                page > 0 -> page -= 1
+                                isReviewMode -> onExitReview()
+                            }
+                        },
+                        enabled = page > 0 || isReviewMode
+                    ) {
+                        Text(
+                            text = if (page == 0 && isReviewMode) "Sair" else "Voltar",
+                            color = if (page > 0 || isReviewMode) KmOnePalette.TextPrimary else KmOnePalette.Neutral
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    repeat(pageCount) { index ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (index <= page) KmOnePalette.Neon else KmOnePalette.CardAlt)
+                        )
+                    }
+                }
+                when (page) {
+                    0 -> OnboardingWelcomePage()
+                    1 -> OnboardingTesterAccessPage()
+                    2 -> OnboardingRadarHelpPage()
+                    3 -> OnboardingManualEyePage()
+                    4 -> OnboardingSeenOffersPage()
+                    5 -> OnboardingTrackingPage()
+                    6 -> OnboardingRecordsPage()
+                    7 -> OnboardingPermissionsPage()
+                    8 -> OnboardingTextPage(
+                        title = "Você continua no controle",
+                        body = "O KM One não aceita nem recusa corridas por você.\n\nEle apenas analisa as informações disponíveis e mostra um apoio para sua decisão."
+                    )
+                    9 -> OnboardingGoalPage(
+                        dailyGoalText = dailyGoalText,
+                        onDailyGoalChange = { dailyGoalText = it },
+                        isValid = dailyGoalValid
+                    )
+                    else -> OnboardingTextPage(
+                        title = "Tudo pronto",
+                        body = "Agora você pode configurar as permissões e começar a usar o radar do KM One."
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(bottom = 14.dp),
+                color = Color.Transparent
+            ) {
+                OnboardingActions(
+                    page = page,
+                    pageCount = pageCount,
+                    dailyGoalValid = dailyGoalValid,
+                    onContinue = {
+                        if (page < pageCount - 1) {
+                            page += 1
+                        } else {
+                            onFinish()
+                        }
+                    },
+                    onSaveGoal = {
+                        parsePositiveOrNull(dailyGoalText)?.let(onSaveDailyGoal)
+                        page += 1
+                    },
+                    onSkipGoal = {
+                        page += 1
+                    },
+                    onFinish = onFinish,
+                    onConfigurePermissions = onConfigurePermissions
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingWelcomePage() {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(128.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                contentDescription = "Ícone KM One",
+                modifier = Modifier.size(112.dp),
+                contentScale = ContentScale.Fit
+            )
+        }
+        OnboardingTextPage(
+            title = "KM One",
+            body = "Seu radar e painel de decisões para corridas.\n\nO KM One ajuda você a analisar ofertas, organizar corridas salvas, acompanhar deslocamentos e entender seus ganhos com mais clareza."
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0x15102033),
+            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.ElectricBlue.copy(alpha = 0.35f))
+        ) {
+            Text(
+                text = "Acesso liberado para motoristas convidados nesta fase inicial de testes.",
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = KmOnePalette.TextPrimary,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingTesterAccessPage() {
+    val context = LocalContext.current
+    val whatsappGroupUrl = "https://chat.whatsapp.com/K1cepLtEEoY6pScVRTNvg9"
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OnboardingTextPage(
+            title = "Acesso gratuito para testadores",
+            body = "O KM One ainda está na fase inicial de testes.\n\nNesta fase, o app está sendo disponibilizado gratuitamente para motoristas convidados.\n\nQuem participa agora como testador ajuda a construir o produto desde o começo e terá acesso gratuito enquanto participa desta fase inicial de testes."
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = KmOnePalette.Card,
+            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Quer acompanhar novidades, tirar dúvidas ou enviar feedback?",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = KmOnePalette.TextPrimary
+                )
+                Text(
+                    text = "Entre no grupo oficial de testes no WhatsApp.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KmOnePalette.TextSecondary
+                )
+                Button(
+                    onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(whatsappGroupUrl))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.NeonSoft,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    Text("Entrar no grupo do WhatsApp")
+                }
+                Text(
+                    text = whatsappGroupUrl,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingRadarHelpPage() {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OnboardingTextPage(
+            title = "Radar de ofertas",
+            body = "Quando uma oferta aparece, o KM One tenta calcular se ela parece boa com base em valor, distância e R$/km.\n\nO aviso é um apoio visual baseado nos dados identificados no momento. Você continua decidindo."
+        )
+        RadarHelpIllustration()
+    }
+}
+
+@Composable
+private fun OnboardingManualEyePage() {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OnboardingTextPage(
+            title = "Análise manual pelo olho",
+            body = "Quando quiser analisar uma oferta manualmente, toque no ícone de olho do radar.\n\nVocê também pode abrir ou ocultar o radar quando precisar e arrastá-lo na horizontal para deixar o atalho em uma posição melhor na tela."
+        )
+        ManualEyeIllustration()
+    }
+}
+
+@Composable
+private fun OnboardingSeenOffersPage() {
+    OnboardingFeatureListPage(
+        title = "Ofertas vistas",
+        body = "Quando uma oferta for identificada, ela pode aparecer em Ofertas vistas para você revisar depois.",
+        items = listOf(
+            "Revise ofertas identificadas com calma.",
+            "Salve uma oferta que virou corrida.",
+            "Ignore o que não precisa entrar no seu histórico."
+        ),
+        accent = KmOnePalette.ElectricBlue
+    )
+}
+
+@Composable
+private fun OnboardingTrackingPage() {
+    OnboardingFeatureListPage(
+        title = "Tracking e deslocamentos",
+        body = "Você também pode registrar deslocamentos e corridas particulares quando usar esse fluxo no app.",
+        items = listOf(
+            "O tracking ajuda a acompanhar distância e tempo.",
+            "Deslocamentos podem entrar nos seus registros.",
+            "Corridas particulares ajudam a manter ganhos e quilômetros organizados."
+        ),
+        accent = KmOnePalette.Attention
+    )
+}
+
+@Composable
+private fun OnboardingRecordsPage() {
+    OnboardingFeatureListPage(
+        title = "Ganhos e registros",
+        body = "O KM One calcula indicadores para ajudar você a entender se a corrida vale a pena.",
+        items = listOf(
+            "Acompanhe ganhos, distância, R$/km e meta diária.",
+            "Registre abastecimentos para organizar seus custos.",
+            "Nos Registros, veja corridas salvas, deslocamentos e resultados por período."
+        ),
+        accent = KmOnePalette.Neon
+    )
+}
+
+@Composable
+private fun RadarHelpIllustration() {
+    val goodColor = Color(0xFF52D67A)
+    val analyzeColor = Color(0xFFFFC857)
+    val badColor = Color(0xFFFF6F7D)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Exemplo de aviso",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = KmOnePalette.TextSecondary
+                    )
+                    Text(
+                        text = "R$ 20,60",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = KmOnePalette.TextPrimary
+                    )
+                    Text(
+                        text = "11,3 km - R$ 1,82/km",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = KmOnePalette.Neon
+                    )
+                }
+                OverlayStatusChip(label = "Boa", accent = goodColor)
+            }
+            OverlayStateExplanation(
+                label = "Boa",
+                accent = goodColor,
+                body = "A oferta parece interessante pelos dados identificados."
+            )
+            OverlayStateExplanation(
+                label = "Analisar",
+                accent = analyzeColor,
+                body = "Exige atenção. Pode estar perto da sua referência ou ter dados incompletos."
+            )
+            OverlayStateExplanation(
+                label = "Não pegar",
+                accent = badColor,
+                body = "Parece ruim para sua meta ou para o valor por km. Não bloqueia a corrida."
+            )
+            Text(
+                text = "Boa não significa aceitar automaticamente. O KM One organiza valor, distância, R$/km, meta e dados disponíveis para ajudar você a decidir.",
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun OverlayStatusChip(
+    label: String,
+    accent: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = accent.copy(alpha = 0.18f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent)
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = accent
+        )
+    }
+}
+
+@Composable
+private fun OverlayStateExplanation(
+    label: String,
+    accent: Color,
+    body: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        OverlayStatusChip(label = label, accent = accent)
+        Text(
+            text = body,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            color = KmOnePalette.TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun ManualEyeIllustration() {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadarHandlePreview(label = "Ocultar")
+                Text(
+                    text = "<  arraste na horizontal  >",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = KmOnePalette.TextSecondary
+                )
+                RadarHandlePreview(label = "Abrir")
+            }
+            DividerLine()
+            OnboardingActionHint(
+                title = "Abrir ou ocultar radar",
+                body = "Use o controle do KM One para deixar o radar visível só quando fizer sentido."
+            )
+            OnboardingActionHint(
+                title = "Mover para os lados",
+                body = "Arraste o radar na horizontal para ajustar a posição do atalho na tela."
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x2600E676))
+                        .border(1.dp, KmOnePalette.Neon.copy(alpha = 0.45f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_eye),
+                        contentDescription = "Ícone de olho",
+                        modifier = Modifier.size(30.dp),
+                        colorFilter = ColorFilter.tint(KmOnePalette.Neon)
+                    )
+                }
+                OnboardingActionHint(
+                    modifier = Modifier.weight(1f),
+                    title = "Toque no olho para analisar",
+                    body = "O motorista continua no controle; o KM One apenas analisa a oferta que está na tela."
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadarHandlePreview(label: String) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = Color(0x2600E676),
+            border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Neon.copy(alpha = 0.45f))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(KmOnePalette.Neon)
+                )
+                Text(
+                    text = "Radar",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = KmOnePalette.TextPrimary
+                )
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = KmOnePalette.TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun OnboardingActionHint(
+    modifier: Modifier = Modifier,
+    title: String,
+    body: String
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = KmOnePalette.TextPrimary
+        )
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodySmall,
+            color = KmOnePalette.TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun OnboardingFeatureListPage(
+    title: String,
+    body: String,
+    items: List<String>,
+    accent: Color
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OnboardingTextPage(title = title, body = body)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(22.dp),
+            color = KmOnePalette.Card,
+            border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.55f))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items.forEach { item ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .padding(top = 7.dp)
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(accent)
+                        )
+                        Text(
+                            text = item,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = KmOnePalette.TextSecondary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingTextPage(
+    title: String,
+    body: String
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = KmOnePalette.TextPrimary
+        )
+        Text(
+            text = body,
+            style = MaterialTheme.typography.bodyLarge,
+            color = KmOnePalette.TextSecondary
+        )
+    }
+}
+
+@Composable
+private fun OnboardingPermissionsPage() {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = "Permissões necessárias",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = KmOnePalette.TextPrimary
+        )
+        Text(
+            text = "Para funcionar corretamente, o KM One precisa de algumas permissões:",
+            style = MaterialTheme.typography.bodyLarge,
+            color = KmOnePalette.TextSecondary
+        )
+        PermissionExplanation("Acessibilidade", "ajuda o app a detectar telas e ofertas dos apps de corrida.")
+        PermissionExplanation("Sobreposição", "permite mostrar o aviso do KM One por cima da Uber/99.")
+        PermissionExplanation("Localização", "usada em recursos de tracking e distância quando você ativar esses recursos.")
+    }
+}
+
+@Composable
+private fun PermissionExplanation(
+    title: String,
+    body: String
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = KmOnePalette.Card,
+        border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = KmOnePalette.TextPrimary
+            )
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = KmOnePalette.TextSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingGoalPage(
+    dailyGoalText: String,
+    onDailyGoalChange: (String) -> Unit,
+    isValid: Boolean
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text(
+            text = "Defina sua meta",
+            style = MaterialTheme.typography.headlineLarge,
+            fontWeight = FontWeight.Bold,
+            color = KmOnePalette.TextPrimary
+        )
+        Text(
+            text = "Informe uma meta diária para o KM One usar como referência nos seus resumos.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = KmOnePalette.TextSecondary
+        )
+        OutlinedTextField(
+            value = dailyGoalText,
+            onValueChange = onDailyGoalChange,
+            label = { Text("Meta diária de ganhos (R$)") },
+            singleLine = true,
+            isError = !isValid,
+            colors = darkInputColors()
+        )
+        if (!isValid) {
+            Text(
+                text = "Informe um valor maior que zero ou pule por enquanto.",
+                style = MaterialTheme.typography.bodySmall,
+                color = KmOnePalette.Attention
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingActions(
+    page: Int,
+    pageCount: Int,
+    dailyGoalValid: Boolean,
+    onContinue: () -> Unit,
+    onSaveGoal: () -> Unit,
+    onSkipGoal: () -> Unit,
+    onFinish: () -> Unit,
+    onConfigurePermissions: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        when (page) {
+            9 -> {
+                Button(
+                    onClick = onSaveGoal,
+                    enabled = dailyGoalValid,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.NeonSoft,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    Text("Salvar e continuar")
+                }
+                TextButton(
+                    onClick = onSkipGoal,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Pular por enquanto", color = KmOnePalette.TextPrimary)
+                }
+            }
+            pageCount - 1 -> {
+                Button(
+                    onClick = onConfigurePermissions,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.NeonSoft,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    Text("Configurar permissões")
+                }
+                OutlinedButton(
+                    onClick = onFinish,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+                ) {
+                    Text("Ir para o app")
+                }
+            }
+            else -> {
+                Button(
+                    onClick = onContinue,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = KmOnePalette.NeonSoft,
+                        contentColor = KmOnePalette.BackgroundDeep
+                    )
+                ) {
+                    Text("Continuar")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConfigTab(
     radarVisualState: ConfigRadarVisualState,
     settings: DriverSettings,
@@ -2047,6 +2867,7 @@ private fun ConfigTab(
     onSaveDailyGoal: (Double) -> Unit,
     onOpenAccessibility: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
+    onReviewOnboarding: () -> Unit,
     onExportDebugLogs: () -> Unit
 ) {
     val context = LocalContext.current
@@ -2063,15 +2884,15 @@ private fun ConfigTab(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         HeaderSection(
-            title = "Configuracoes",
-            subtitle = "Meta do motorista e permissoes necessarias."
+            title = "Configurações",
+            subtitle = "Meta do motorista e permissões necessárias."
         )
         CockpitCard(title = "Meta do motorista", accent = KmOnePalette.Neon) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = dailyGoalText,
                     onValueChange = { dailyGoalText = it },
-                    label = { Text("Meta diaria (R$)") },
+                    label = { Text("Meta diária (R$)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -2090,7 +2911,7 @@ private fun ConfigTab(
                 }
             }
         }
-        CockpitCard(title = "Permissoes necessarias", accent = KmOnePalette.ElectricBlue) {
+        CockpitCard(title = "Permissões necessárias", accent = KmOnePalette.ElectricBlue) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PermissionRow(
                     title = "Acessibilidade",
@@ -2100,12 +2921,29 @@ private fun ConfigTab(
                     onClick = onOpenAccessibility
                 )
                 PermissionRow(
-                    title = "Sobreposicao",
+                    title = "Sobreposição",
                     status = if (overlayGranted) "Permitida" else "Pendente",
                     granted = overlayGranted,
                     actionLabel = "Permitir",
                     onClick = onRequestOverlayPermission
                 )
+            }
+        }
+        CockpitCard(title = "Introdução", accent = KmOnePalette.Attention) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Reveja a explicação inicial sobre o KM One, permissões e controle do motorista.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = KmOnePalette.TextSecondary
+                )
+                OutlinedButton(
+                    onClick = onReviewOnboarding,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = KmOnePalette.TextPrimary),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, KmOnePalette.Line)
+                ) {
+                    Text("Ver introdução novamente")
+                }
             }
         }
     }
@@ -2663,12 +3501,12 @@ private fun DailyGoalCard(
     onConfigureGoal: () -> Unit
 ) {
     val statusText = when {
-        summary.goalSource == HomeGoalSource.CONFIGURED -> "Meta diaria"
+        summary.goalSource == HomeGoalSource.CONFIGURED -> "Meta diária"
         summary.goalSource == HomeGoalSource.FALLBACK -> "Meta base do dia"
-        else -> "Meta diaria"
+        else -> "Meta diária"
     }
     CockpitCard(
-        title = "Meta diaria",
+        title = "Meta diária",
         accent = KmOnePalette.Neon
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -2688,7 +3526,7 @@ private fun DailyGoalCard(
                     )
                     Text(
                         text = when {
-                            summary.goalSource == HomeGoalSource.MISSING -> "Defina uma meta diaria"
+                            summary.goalSource == HomeGoalSource.MISSING -> "Defina uma meta diária"
                             summary.isGoalReached -> "Meta batida"
                             else -> "Faltam ${formatMoney(summary.remainingToGoal)}"
                         },
@@ -2701,8 +3539,8 @@ private fun DailyGoalCard(
                             summary.goalSource == HomeGoalSource.MISSING ->
                                 "Configure uma meta para acompanhar seu progresso do dia."
                             summary.isGoalReached ->
-                                "Voce passou ${formatMoney(summary.earnedToday - (summary.dailyGoal ?: 0.0))} da meta de hoje."
-                            else -> "para bater sua meta diaria"
+                                "Você passou ${formatMoney(summary.earnedToday - (summary.dailyGoal ?: 0.0))} da meta de hoje."
+                            else -> "para bater sua meta diária"
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = KmOnePalette.TextSecondary
@@ -2716,7 +3554,7 @@ private fun DailyGoalCard(
                     )
                 } else {
                     StatusChip(
-                        text = "${summary.progressPercent ?: 0}% concluido",
+                        text = "${summary.progressPercent ?: 0}% concluído",
                         background = Color(0x14244D78),
                         textColor = KmOnePalette.ElectricBlue
                     )
@@ -2737,7 +3575,7 @@ private fun DailyGoalCard(
                     modifier = Modifier.weight(1f),
                     label = if (summary.goalSource == HomeGoalSource.MISSING) "Meta" else "Falta",
                     value = if (summary.goalSource == HomeGoalSource.MISSING) {
-                        "Nao definida"
+                        "Não definida"
                     } else {
                         formatMoney(summary.remainingToGoal)
                     },
@@ -2749,7 +3587,7 @@ private fun DailyGoalCard(
             DetailLine(
                 label = "Meta",
                 value = summary.dailyGoal?.let(::formatMoney)
-                    ?: "Nao configurada"
+                    ?: "Não configurada"
             )
             if (errorMessage != null) {
                 Text(
@@ -2972,7 +3810,7 @@ private fun TrackingLiveCard(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        text = "Duracao: ${formatTrackingElapsed(((pendingEndedAtMs ?: nowMs) - (session.startedAtMs ?: nowMs)).coerceAtLeast(0L))}",
+                        text = "Duração: ${formatTrackingElapsed(((pendingEndedAtMs ?: nowMs) - (session.startedAtMs ?: nowMs)).coerceAtLeast(0L))}",
                         style = MaterialTheme.typography.bodySmall,
                         color = KmOnePalette.TextSecondary
                     )
@@ -3032,9 +3870,9 @@ private fun TrackingLiveCard(
                     selectedSaveType?.let { saveType ->
                         Text(
                             text = if (saveType == TrackingSaveType.DISPLACEMENT) {
-                                "Sera salvo sem receita e sem distancia medida nesta etapa."
+                                "Será salvo sem receita e sem distância medida nesta etapa."
                             } else {
-                                "Sera salvo em Registros e somado ao total do dia."
+                                "Será salvo em Registros e somado ao total do dia."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = KmOnePalette.TextSecondary
@@ -3180,7 +4018,7 @@ private fun TrackingLiveCard(
                         HomeStatusPill(formatKmCompact(session.distanceKm), KmOnePalette.Attention)
                     }
                     Text(
-                        text = "Distancia ao vivo: ${formatKm(session.distanceKm)} • pontos GPS: ${session.pointCount}",
+                        text = "Distância ao vivo: ${formatKm(session.distanceKm)} - pontos GPS: ${session.pointCount}",
                         style = MaterialTheme.typography.bodySmall,
                         color = KmOnePalette.TextSecondary
                     )
@@ -3239,7 +4077,7 @@ private fun TrackingLiveCard(
                     }
                 } else {
                     Text(
-                        text = "Km inicial e final ainda nao usam GPS. O registro salvo entra em Registros.",
+                        text = "Km inicial e final ainda não usam GPS. O registro salvo entra em Registros.",
                         style = MaterialTheme.typography.bodySmall,
                         color = KmOnePalette.TextSecondary
                     )
@@ -3296,9 +4134,9 @@ private fun AnalyzeOfferCta(
     val actionLabel = homeRadarActionLabel(isRadarVisible)
     val title = actionLabel
     val description = when {
-        !isServiceActive -> "Ative a acessibilidade do KM One para abrir o radar."
-        !isOverlayPermissionGranted -> "Permita sobreposicao para abrir o radar do KM One."
-        isRadarVisible -> "Radar visivel. Toque para ocultar o painel."
+        !isServiceActive -> "Ative a Acessibilidade do KM One para abrir o radar."
+        !isOverlayPermissionGranted -> "Permita sobreposição para abrir o radar do KM One."
+        isRadarVisible -> "Radar visível. Toque para ocultar o painel."
         else -> "Abra o radar para acompanhar e analisar ofertas."
     }
     val actionIcon = homeRadarActionIconRes(isRadarVisible)
@@ -3637,7 +4475,7 @@ private fun FuelEntryExpandedContent(
         DetailLine("Valor", visualData.amountLabel)
         DetailLine("Combustivel", visualData.fuelTypeLabel)
         DetailLine("Litros", visualData.litersLabel)
-        DetailLine("Observacao", visualData.noteLabel)
+        DetailLine("Observação", visualData.noteLabel)
         DetailLine("Quando", visualData.expandedStampLabel)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
@@ -3829,7 +4667,7 @@ private fun SavedRideEditDialog(
                 OutlinedTextField(
                     value = pickupDistanceText,
                     onValueChange = { pickupDistanceText = it },
-                    label = { Text("Distancia de busca (km)") },
+                    label = { Text("Distância de busca (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -3843,7 +4681,7 @@ private fun SavedRideEditDialog(
                 OutlinedTextField(
                     value = tripDistanceText,
                     onValueChange = { tripDistanceText = it },
-                    label = { Text("Distancia da viagem (km)") },
+                    label = { Text("Distância da viagem (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -3857,7 +4695,7 @@ private fun SavedRideEditDialog(
                 OutlinedTextField(
                     value = totalDistanceText,
                     onValueChange = { totalDistanceText = it },
-                    label = { Text("Distancia total (km)") },
+                    label = { Text("Distância total (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -3939,7 +4777,7 @@ private fun FuelEntryDialog(
                 OutlinedTextField(
                     value = noteText,
                     onValueChange = { noteText = it },
-                    label = { Text("Observacao") },
+                    label = { Text("Observação") },
                     colors = darkInputColors()
                 )
             }
@@ -4044,7 +4882,7 @@ private fun ManualRideDialog(
                 OutlinedTextField(
                     value = pickupDistanceText,
                     onValueChange = { pickupDistanceText = it },
-                    label = { Text("Distancia de busca (km)") },
+                    label = { Text("Distância de busca (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -4058,7 +4896,7 @@ private fun ManualRideDialog(
                 OutlinedTextField(
                     value = tripDistanceText,
                     onValueChange = { tripDistanceText = it },
-                    label = { Text("Distancia da viagem (km)") },
+                    label = { Text("Distância da viagem (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -4072,7 +4910,7 @@ private fun ManualRideDialog(
                 OutlinedTextField(
                     value = totalDistanceText,
                     onValueChange = { totalDistanceText = it },
-                    label = { Text("Distancia total (km)") },
+                    label = { Text("Distância total (km)") },
                     singleLine = true,
                     colors = darkInputColors()
                 )
@@ -4378,9 +5216,9 @@ private fun TrackingRecordCard(
                 )
             }
             DividerLine()
-            DetailLine("Duracao", model.durationLabel)
-            DetailLine("Distancia", model.distanceLabel)
-            record.notes?.takeIf { it.isNotBlank() }?.let { DetailLine("Observacao", it) }
+            DetailLine("Duração", model.durationLabel)
+            DetailLine("Distância", model.distanceLabel)
+            record.notes?.takeIf { it.isNotBlank() }?.let { DetailLine("Observação", it) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onEdit,
@@ -4448,7 +5286,7 @@ private fun TrackingRecordEditDialog(
                 OutlinedTextField(
                     value = distanceText,
                     onValueChange = { distanceText = it },
-                    label = { Text("Distancia km") },
+                    label = { Text("Distância km") },
                     singleLine = true,
                     isError = !distanceValid,
                     colors = darkInputColors()
@@ -4456,7 +5294,7 @@ private fun TrackingRecordEditDialog(
                 OutlinedTextField(
                     value = notesText,
                     onValueChange = { notesText = it },
-                    label = { Text("Observacao") },
+                    label = { Text("Observação") },
                     colors = darkInputColors()
                 )
             }
