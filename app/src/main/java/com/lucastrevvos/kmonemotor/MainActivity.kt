@@ -118,6 +118,8 @@ import com.lucastrevvos.kmonemotor.radar.tracking.trackingGpsStatusLabel
 import com.lucastrevvos.kmonemotor.ui.theme.KMONEMotorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -181,6 +183,16 @@ private data class HomeUiState(
     val errorMessage: String? = null
 )
 
+private data class HomeRadarVisualState(
+    val serviceActive: Boolean = false,
+    val piuOverlayShowing: Boolean = false,
+    val piuLastX: Int = 0
+)
+
+private data class ConfigRadarVisualState(
+    val serviceActive: Boolean = false
+)
+
 internal enum class TrackingUiStatus {
     IDLE,
     RUNNING
@@ -217,6 +229,18 @@ private sealed class RecordsListItem {
         override val stableId: String = "tracking:${trackingRecord.id}"
         override val timestampMs: Long = trackingRecord.endedAtMs
     }
+}
+
+private fun RadarDebugState.toHomeRadarVisualState(): HomeRadarVisualState {
+    return HomeRadarVisualState(
+        serviceActive = serviceActive,
+        piuOverlayShowing = piuOverlayShowing,
+        piuLastX = piuLastX
+    )
+}
+
+private fun RadarDebugState.toConfigRadarVisualState(): ConfigRadarVisualState {
+    return ConfigRadarVisualState(serviceActive = serviceActive)
 }
 
 @Composable
@@ -445,13 +469,19 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
         ) {
             when (selectedTab) {
                 AppTab.HOME -> {
-                    val debugState by if (debugStateOverride == null) {
-                        RadarDebugStore.state.collectAsStateWithLifecycle()
+                    val homeRadarVisualState by if (debugStateOverride == null) {
+                        remember {
+                            RadarDebugStore.state
+                                .map(RadarDebugState::toHomeRadarVisualState)
+                                .distinctUntilChanged()
+                        }.collectAsStateWithLifecycle(
+                            initialValue = RadarDebugStore.state.value.toHomeRadarVisualState()
+                        )
                     } else {
-                        rememberUpdatedState(debugStateOverride)
+                        rememberUpdatedState(debugStateOverride.toHomeRadarVisualState())
                     }
                     HomeDashboardFinalTab(
-                        debugState = debugState,
+                        radarVisualState = homeRadarVisualState,
                         homeState = homeState,
                         resolvedSummary = liveHomeSummary,
                         savedRides = savedRides,
@@ -472,7 +502,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                             }
                         },
                         onToggleRadar = {
-                            val currentVisible = debugState.piuOverlayShowing
+                            val currentVisible = homeRadarVisualState.piuOverlayShowing
                             val targetVisible = !currentVisible
                             RadarLogger.i(
                                 "KM_V2_HOME",
@@ -481,7 +511,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                 "targetVisible" to targetVisible
                             )
                             when {
-                                !debugState.serviceActive -> {
+                                !homeRadarVisualState.serviceActive -> {
                                     RadarLogger.w(
                                         "KM_V2_HOME",
                                         "KM_V2_HOME_RADAR_TOGGLE_BLOCKED",
@@ -510,7 +540,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                     RadarDebugStore.updatePiuOverlayState(
                                         permissionGranted = true,
                                         showing = false,
-                                        x = debugState.piuLastX
+                                        x = homeRadarVisualState.piuLastX
                                     )
                                     RadarLogger.i(
                                         "KM_V2_HOME",
@@ -524,7 +554,7 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                                     RadarDebugStore.updatePiuOverlayState(
                                         permissionGranted = true,
                                         showing = shown,
-                                        x = debugState.piuLastX
+                                        x = homeRadarVisualState.piuLastX
                                     )
                                     if (shown) {
                                         RadarLogger.i(
@@ -740,13 +770,19 @@ private fun KmOneApp(debugStateOverride: RadarDebugState? = null) {
                 )
 
                 AppTab.CONFIG -> {
-                    val debugState by if (debugStateOverride == null) {
-                        RadarDebugStore.state.collectAsStateWithLifecycle()
+                    val configRadarVisualState by if (debugStateOverride == null) {
+                        remember {
+                            RadarDebugStore.state
+                                .map(RadarDebugState::toConfigRadarVisualState)
+                                .distinctUntilChanged()
+                        }.collectAsStateWithLifecycle(
+                            initialValue = RadarDebugStore.state.value.toConfigRadarVisualState()
+                        )
                     } else {
-                        rememberUpdatedState(debugStateOverride)
+                        rememberUpdatedState(debugStateOverride.toConfigRadarVisualState())
                     }
                     ConfigTab(
-                        debugState = debugState,
+                        radarVisualState = configRadarVisualState,
                         settings = driverSettings,
                         isExportingLogs = debugExporting,
                         exportMessage = debugExportMessage,
@@ -972,7 +1008,7 @@ private fun HomeDashboardTab(
 
 @Composable
 private fun HomeDashboardFinalTab(
-    debugState: RadarDebugState,
+    radarVisualState: HomeRadarVisualState,
     homeState: HomeUiState,
     resolvedSummary: HomeDailySummary,
     savedRides: List<SavedRide>,
@@ -1029,7 +1065,7 @@ private fun HomeDashboardFinalTab(
         ) {
             item {
                 HomeBrandHeader(
-                    isServiceActive = debugState.serviceActive,
+                    isServiceActive = radarVisualState.serviceActive,
                     seenOffersCount = summary.seenOffersCount,
                     onOpenConfig = onOpenConfig
                 )
@@ -1040,7 +1076,7 @@ private fun HomeDashboardFinalTab(
                     isLoading = homeState.isLoading,
                     errorMessage = homeState.errorMessage,
                     yesterdayDelta = yesterdayDelta,
-                    isRadarVisible = debugState.piuOverlayShowing,
+                    isRadarVisible = radarVisualState.piuOverlayShowing,
                     onAnalyze = onToggleRadar,
                     onConfigureGoal = onConfigureGoal
                 )
@@ -1942,7 +1978,7 @@ private fun RecordsTab(
 
 @Composable
 private fun ConfigTab(
-    debugState: RadarDebugState,
+    radarVisualState: ConfigRadarVisualState,
     settings: DriverSettings,
     isExportingLogs: Boolean,
     exportMessage: String?,
@@ -1996,8 +2032,8 @@ private fun ConfigTab(
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 PermissionRow(
                     title = "Acessibilidade",
-                    status = if (debugState.serviceActive) "Ativa" else "Pendente",
-                    granted = debugState.serviceActive,
+                    status = if (radarVisualState.serviceActive) "Ativa" else "Pendente",
+                    granted = radarVisualState.serviceActive,
                     actionLabel = "Abrir",
                     onClick = onOpenAccessibility
                 )
