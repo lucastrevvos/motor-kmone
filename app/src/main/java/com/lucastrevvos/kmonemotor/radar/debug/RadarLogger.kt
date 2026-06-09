@@ -2,10 +2,15 @@ package com.lucastrevvos.kmonemotor.radar.debug
 
 import android.content.Context
 import android.util.Log
+import com.lucastrevvos.kmonemotor.radar.core.RadarFeatureFlags
 
 object RadarLogger {
     fun initialize(context: Context) {
-        DebugEventLogStore.initialize(context.applicationContext)
+        if (RadarFeatureFlags.ENABLE_DEBUG_EVENT_FILE_LOG) {
+            DebugEventLogStore.initialize(context.applicationContext)
+        } else {
+            Log.i("KM_V2_DEBUG", "KM_V2_DEBUG_EVENT_FILE_LOG_DISABLED")
+        }
     }
 
     fun d(area: String, event: String, vararg keyValues: Pair<String, Any?>) {
@@ -30,10 +35,12 @@ object RadarLogger {
         } catch (_: RuntimeException) {
             println("$level/$area: $message")
         }
-        try {
-            DebugEventLogStore.append(level = level, area = area, message = message)
-        } catch (_: RuntimeException) {
-            println("$level/$area: $message")
+        if (RadarFeatureFlags.ENABLE_DEBUG_EVENT_FILE_LOG) {
+            try {
+                DebugEventLogStore.append(level = level, area = area, message = message)
+            } catch (_: RuntimeException) {
+                println("$level/$area: $message")
+            }
         }
     }
 
